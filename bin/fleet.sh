@@ -51,7 +51,17 @@ FLEET_STATE_TTL="${FLEET_STATE_TTL:-900}"   # state files older than this ⇒ sc
 # short too (AF_UNIX caps socket paths at ~104 chars). Route every tmux call through this
 # wrapper; `exec tmux` sites pass -S explicitly (exec bypasses shell functions).
 TMUX_SOCK="${FLEET_TMUX_SOCK:-/tmp/fleet-$(id -u).sock}"
-tmux() { command tmux -S "$TMUX_SOCK" "$@"; }
+# tmux refuses to start or attach when $TERM has no terminfo entry on THIS host — common
+# over ssh from Ghostty/Kitty/WezTerm to a box that lacks their terminfo ("missing or
+# unsuitable terminal: xterm-ghostty"). Resolve a TERM that exists here, keeping the real
+# one when present (full fidelity) and falling back to xterm-256color otherwise so fleet
+# still works. Install the real terminfo for fidelity: infocmp -x $TERM | ssh <host> 'tic -x -'
+if [ -n "${TERM:-}" ] && command -v infocmp >/dev/null 2>&1 && infocmp "$TERM" >/dev/null 2>&1; then
+  FLEET_TERM="$TERM"
+else
+  FLEET_TERM="${FLEET_TERM:-xterm-256color}"
+fi
+tmux() { TERM="$FLEET_TERM" command tmux -S "$TMUX_SOCK" "$@"; }
 _LETTERS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 # Roster + per-agent settings as parallel indexed arrays (bash-3.2 safe). An agent
@@ -348,6 +358,8 @@ cmd_start() {
   echo
   echo "attach: fleet attach   (or: tmux -S $TMUX_SOCK attach -t $SESSION; detach: Ctrl-b d)"
   echo "remote: claude.ai/code"
+  [[ -n "${TERM:-}" && "$FLEET_TERM" != "$TERM" ]] && \
+    echo "note: '$TERM' has no terminfo here — using '$FLEET_TERM'. Full fidelity: infocmp -x $TERM | ssh $(hostname) 'tic -x -'"
 }
 
 cmd_status() {
@@ -437,9 +449,9 @@ cmd_attach() {
   # Attach if outside tmux; switch-client if already inside one. exec bypasses the
   # tmux() wrapper (it runs the real binary), so pass the pinned socket explicitly.
   if [[ -n "${TMUX:-}" ]]; then
-    exec tmux -S "$TMUX_SOCK" switch-client -t "$SESSION"
+    exec env TERM="$FLEET_TERM" tmux -S "$TMUX_SOCK" switch-client -t "$SESSION"
   else
-    exec tmux -S "$TMUX_SOCK" attach -t "$SESSION"
+    exec env TERM="$FLEET_TERM" tmux -S "$TMUX_SOCK" attach -t "$SESSION"
   fi
 }
 

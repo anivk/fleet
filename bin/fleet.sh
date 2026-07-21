@@ -819,11 +819,11 @@ cmd_update() {
 # fleet remote ls      — list configured hosts (see cmd_remote_ls).
 # Requires: tailscale (with SSH) on both ends, and fleet installed on the remote.
 cmd_remote() {
-  local a target="" use_cmux=0
+  local a target="" use_cc=0
   _remote_all=0
   for a in "$@"; do
     case "$a" in
-      --cmux)  use_cmux=1 ;;                 # open the attach in a new cmux workspace
+      --CC|--cc|--cmux)  use_cc=1 ;;         # tmux control mode: native tabs in cmux/iTerm2
       --all)   _remote_all=1 ;;
       attach)  ;;                            # the only remote action; implied
       *)       [[ -z "$target" ]] && target="$a" ;;
@@ -831,23 +831,32 @@ cmd_remote() {
   done
   case "$target" in ""|ls|list) cmd_remote_ls; return ;; esac
   local host; host="$(resolve_host "$target")"
-  [[ "$use_cmux" == 1 ]] && { cmd_remote_cmux "$host"; return; }
+  [[ "$use_cc" == 1 ]] && { cmd_remote_cc "$host"; return; }
   remote_exec "$host" attach
 }
 
-# fleet remote <host> --cmux — mirror the remote fleet into cmux NATIVELY via tmux control
-# mode (cmux `ssh-tmux`, i.e. `tmux -CC`): each window becomes a cmux tab, each pane a
-# native split — the iTerm2-style integration. Fleet's session is on tmux's default socket
-# (see TMUX_SOCK), which is exactly what `ssh-tmux` attaches. Run it from inside cmux (its
-# CLI only accepts cmux-spawned callers), with the "Remote tmux" beta setting enabled.
-cmd_remote_cmux() {
-  local host=$1 cmux fqdn
-  cmux="$(command -v cmux 2>/dev/null || echo /Applications/cmux.app/Contents/Resources/bin/cmux)"
-  [[ -x "$cmux" ]] || die "cmux not found (install cmux.app, or add its CLI to PATH)"
+# fleet remote <host> --CC — attach the remote fleet in tmux CONTROL MODE (tmux -CC): each
+# window becomes a native tab, each pane a native split. Autodetects the terminal:
+#   cmux   — its CLI only answers to processes started inside cmux, so a ping that succeeds
+#            means we're in cmux → use its native `ssh-tmux` (does the -CC over ssh itself).
+#   iTerm2 — intercepts a raw `tmux -CC` stream → just run it over ssh (-tt for the PTY).
+# No other terminal implements -CC, so we bail with a hint. Fleet's session is on tmux's
+# default socket, which is what both attach.
+cmd_remote_cc() {
+  local host=$1 fqdn cmux
   fqdn="$(tailscale status --json 2>/dev/null | jq -r --arg h "$host" '.Peer[]? | select(.HostName==$h) | .DNSName // empty' 2>/dev/null | sed 's/\.$//')"
   [[ -n "$fqdn" ]] || fqdn="$host"
-  echo "cmux ssh-tmux (tmux -CC) -> $FLEET_SSH_USER@$fqdn"
-  exec "$cmux" ssh-tmux "$FLEET_SSH_USER@$fqdn"
+  cmux="$(command -v cmux 2>/dev/null || echo /Applications/cmux.app/Contents/Resources/bin/cmux)"
+  if [[ -x "$cmux" ]] && "$cmux" ping >/dev/null 2>&1; then
+    echo "cmux ssh-tmux (tmux -CC) -> $FLEET_SSH_USER@$fqdn"
+    exec "$cmux" ssh-tmux "$FLEET_SSH_USER@$fqdn"
+  fi
+  if [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" ]]; then
+    echo "iTerm2 tmux -CC -> $FLEET_SSH_USER@$fqdn"
+    exec ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$FLEET_SSH_USER@$fqdn" \
+      "exec tmux -S /tmp/tmux-\$(id -u)/default -CC attach -t $SESSION"
+  fi
+  die "--CC (tmux control mode) needs cmux or iTerm2 — you're in ${TERM_PROGRAM:-an unknown terminal}. Plain attach: fleet remote $host"
 }
 
 # fleet rdp-reset [host] — terminate this user's hung graphical (wayland/x11) sessions.

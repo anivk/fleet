@@ -62,10 +62,14 @@ fi
 
 chmod +x "$tmp"
 if [ -w "$dest" ]; then
-  mv "$tmp" "$dest/fleet"
+  mv -f "$tmp" "$dest/fleet"                         # dir writable: atomic rename
+elif [ -w "$dest/fleet" ]; then
+  cp "$tmp" "$dest/fleet" && rm -f "$tmp"            # dir not writable but the binary is:
+                                                    # overwrite in place, no sudo (fleet has
+                                                    # already exec'd away, so no ETXTBSY)
 else
-  echo "get: $dest not writable — using sudo"
-  sudo mv "$tmp" "$dest/fleet"
+  echo "get: $dest/fleet not writable — using sudo"
+  sudo mv -f "$tmp" "$dest/fleet"
 fi
 
 echo "get: installed $dest/fleet"

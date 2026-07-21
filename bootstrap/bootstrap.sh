@@ -204,8 +204,12 @@ _ensure_grd() {
   # root:root 600, which it can't read → "TLS not configured properly". Hand both to it.
   local grd_user; grd_user="$($SUDO systemctl show gnome-remote-desktop.service -p User --value 2>/dev/null)"
   [ -n "$grd_user" ] && $SUDO chown "$grd_user" "$crt" "$key" 2>/dev/null || true
-  local rpass="${RDP_PASSWORD:-}"          # RDP-layer password; prompt on a TTY if unset
-  if [ -z "$rpass" ] && [ -t 0 ]; then
+  # RDP-layer password. Skip the prompt entirely on re-runs when credentials are already
+  # set — unless RDP_PASSWORD is given explicitly to rotate them.
+  local rpass="${RDP_PASSWORD:-}"
+  if [ -z "$rpass" ] && $SUDO grdctl --system status 2>/dev/null | grep -i 'Username:' | grep -qv '(empty)'; then
+    echo "  = RDP credentials already set — keeping them (RDP_PASSWORD=… to rotate)"
+  elif [ -z "$rpass" ] && [ -t 0 ]; then
     printf "  set an RDP password for %s (blank to skip): " "$(id -un)"; stty -echo 2>/dev/null; read -r rpass; stty echo 2>/dev/null; echo
   fi
   $SUDO grdctl --system rdp set-tls-cert "$crt" >/dev/null 2>&1 || true

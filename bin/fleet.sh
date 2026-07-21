@@ -1011,6 +1011,25 @@ if command -v fleet >/dev/null 2>&1; then F=fleet; else F="$(cat ~/.config/fleet
 
 # fleet tray {start|stop|status|enable-autostart|disable-autostart}
 # The menubar monitor. Runs on client OR server. Autostart is OPT-IN.
+# fleet login — device/browser login for the agent CLIs. codex uses --device-auth
+# (a device code — works over SSH with no local browser).
+cmd_login() {
+  local did=0
+  if command -v "$CLAUDE" >/dev/null 2>&1; then
+    if [[ -f "$HOME/.claude/.credentials.json" ]] || grep -qs oauthAccount "$HOME/.claude.json" 2>/dev/null || [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+      echo "= claude already logged in"
+    else echo "== claude =="; "$CLAUDE" login || echo "  ! claude login didn't finish"; fi
+    did=1
+  fi
+  if command -v "$CODEX" >/dev/null 2>&1; then
+    if "$CODEX" login status 2>&1 | grep -qiE 'logged in (using|with|as|via)' || [[ -n "${OPENAI_API_KEY:-}" ]]; then
+      echo "= codex already logged in"
+    else echo "== codex =="; "$CODEX" login --device-auth || echo "  ! codex login didn't finish"; fi
+    did=1
+  fi
+  [[ "$did" == 1 ]] || die "no claude/codex CLI found on PATH — run: fleet bootstrap"
+}
+
 # fleet boot {enable|disable|status} — start the fleet on BOOT, before any login
 # (Linux/systemd). Unlike the XDG login-autostart (which only fires on graphical
 # login), this installs a systemd *user* service + enables linger, so a headless
@@ -1361,6 +1380,7 @@ LAUNCH & LIFECYCLE
   fleet respawn [host]              revive dead agents + start any missing (local or a host)
   fleet boot {enable [--xvfb]|disable}   start on boot before login (Linux); --xvfb runs --chrome agents headless
   fleet caffeinate [--prevent-screen-lock] / decaffeinate   keep the machine awake (macOS + Linux)
+  fleet login                       device-login the agent CLIs (claude + codex --device-auth)
 
 DRIVE AGENTS  (no need to attach)
   fleet send <agent> <text>         type text into an agent, then Enter
@@ -1422,6 +1442,7 @@ case "${1:-start}" in
   remote-install) shift; cmd_remote_install "$@" ;;  # clone + install fleet on a remote
   tray)    shift; cmd_tray "$@" ;;       # menubar monitor (start/stop/status/…)
   boot)    shift; cmd_boot "$@" ;;       # start on boot before login (Linux/systemd)
+  login)   cmd_login ;;                  # device login the agent CLIs (claude + codex)
   caffeinate)   shift; cmd_caffeinate "$@" ;;  # keep the machine awake (mac + linux)
   decaffeinate) cmd_decaffeinate ;;            # let it sleep again
   hosts)   shift; cmd_hosts "$@" ;;      # list/add/rm remote hosts (or --json for the tray)

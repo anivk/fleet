@@ -197,16 +197,18 @@ ensure_local_bin_path() {
 # Device/browser login for a CLI — interactive only (needs a terminal to show the
 # prompt); skipped when already authed or run unattended.
 _login() {
-  local c=$1 authed=0
+  local c=$1 authed=0 logincmd
   command -v "$c" >/dev/null 2>&1 || return 0
   case "$c" in
-    claude) { [ -f "$HOME/.claude/.credentials.json" ] || grep -qs oauthAccount "$HOME/.claude.json" 2>/dev/null || [ -n "${ANTHROPIC_API_KEY:-}" ]; } && authed=1 ;;
-    codex)  { codex login status 2>/dev/null | grep -qiE 'logged in (using|with|as|via)' || [ -n "${OPENAI_API_KEY:-}" ]; } && authed=1 ;;
+    claude) logincmd="claude login"
+            { [ -f "$HOME/.claude/.credentials.json" ] || grep -qs oauthAccount "$HOME/.claude.json" 2>/dev/null || [ -n "${ANTHROPIC_API_KEY:-}" ]; } && authed=1 ;;
+    codex)  logincmd="codex login --device-auth"   # device code — works over SSH, no local browser
+            { codex login status 2>&1 | grep -qiE 'logged in (using|with|as|via)' || [ -n "${OPENAI_API_KEY:-}" ]; } && authed=1 ;;
   esac
   [ "$authed" = 1 ] && { echo "  = $c already logged in"; return 0; }
-  [ -t 0 ] || { echo "  · $c not logged in — run '$c login' from a terminal"; return 0; }
-  echo "  logging in to $c — approve the browser/device prompt it prints…"
-  "$c" login || echo "  ! $c login didn't finish — run '$c login' later"
+  [ -t 0 ] || { echo "  · $c not logged in — run: $logincmd"; return 0; }
+  echo "  → $logincmd   (approve the prompt it prints)"
+  $logincmd || echo "  ! $c login didn't finish — run: $logincmd"
 }
 
 if [ "$CLIS_ONLY" = 0 ]; then
@@ -255,20 +257,26 @@ fi
 [ "$WANT_CLAUDE" = 1 ] && install_cli claude
 [ "$WANT_CODEX" = 1 ] && install_cli codex
 
-# 4. PATH fix + device/browser login (interactive only)
+# 4. PATH fix
 ensure_local_bin_path
-[ "$WANT_CLAUDE" = 1 ] && _login claude
-[ "$WANT_CODEX" = 1 ]  && _login codex
 
+# Everything is installed — print the summary, THEN log in as the final step (so the
+# interactive auth prompt never interrupts the install).
 echo
-echo "bootstrap done. next:"
-[ "$WANT_CLAUDE" = 1 ] && echo "  claude login                 # authenticate (device flow; or export ANTHROPIC_API_KEY)"
-[ "$WANT_CODEX" = 1 ]  && echo "  codex login                  # authenticate (or export OPENAI_API_KEY)"
+echo "bootstrap done."
 if [ "$WANT_CHROME" = 1 ] && [ "$WANT_EXT" = 1 ]; then
-  echo "  --chrome: extension force-installs on next Chrome launch (desktop). Then run"
+  echo "  --chrome: extension force-installs on next Chrome launch (desktop); then run"
   echo "            'claude --chrome' once — approve the connect prompt if it appears."
 elif [ "$WANT_CHROME" = 1 ]; then
   echo "  --chrome: open the browser (needs a desktop), install the 'Claude in Chrome'"
   echo "            extension from the Web Store, then run 'claude --chrome' once to connect."
 fi
 echo "  install fleet:  <fleet-repo>/install.sh   (or: fleet remote-install <host> from your laptop)"
+
+# 5. Auth — LAST, after all installation + the summary.
+if [ "$WANT_CLAUDE" = 1 ] || [ "$WANT_CODEX" = 1 ]; then
+  echo
+  echo "logging in the agent CLIs:"
+  [ "$WANT_CLAUDE" = 1 ] && _login claude
+  [ "$WANT_CODEX" = 1 ]  && _login codex
+fi

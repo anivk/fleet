@@ -46,7 +46,7 @@ fleet ships as a **single binary** (macOS + Linux, arm64 + amd64) — download i
 curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh   # -> /usr/local/bin/fleet
 
 fleet bootstrap     # provision this box: Tailscale + deps (git/jq/tmux) + claude   (servers)
-fleet install       # wire config, tmux, Claude hooks, login-autostart
+fleet install server  # wire config, tmux, hooks, autostart (or: fleet install client)
 ```
 
 - **`get.sh`** grabs the right binary for your OS/arch from the latest GitHub release
@@ -365,7 +365,7 @@ for packages, so run it there (interactively):
 curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh   # the binary
 fleet bootstrap        # deps (git/jq/tmux) + claude   (tailscale already up)
 claude login           # once — device flow (or export ANTHROPIC_API_KEY)
-fleet install          # wire config + hooks + autostart
+fleet install server   # wire config + hooks + autostart
 fleet setup you/repo 4 # (optional) add repo agents; or `fleet config push` from your laptop
 fleet start            # launch the agents      (fleet boot enable → start on boot)
 ```
@@ -465,8 +465,9 @@ servers, an Ubuntu desktop + Mac VMs, etc.); other OSes aren't supported.
 
 ## Client vs server mode
 
-A machine installs in one of two modes (recorded in `fleet.json`). `fleet install`
-reads `FLEET_MODE` / `FLEET_LOCATION` at install time:
+A machine installs in one of two modes — pass it (and an optional location tag) as
+arguments: **`fleet install [server|client] [location]`** (`FLEET_MODE` /
+`FLEET_LOCATION` env still work):
 
 - **`server`** (default) — a full node: runs its own local agents and installs a
   login autostart. Your desktops and VMs.
@@ -476,12 +477,12 @@ reads `FLEET_MODE` / `FLEET_LOCATION` at install time:
   all still work. Good for a laptop you only use to drive remote fleets.
 
 ```sh
-FLEET_MODE=client FLEET_LOCATION=laptop fleet install   # attach-only laptop
-fleet install                                           # server (desktop / VM)
+fleet install server               # a box that runs agents (default)
+fleet install client laptop        # attach-only laptop, tagged 'laptop'
 ```
 
-Switching an existing install to client mode also removes the autostart entry a
-prior server install left behind. `fleet update` preserves the chosen mode.
+The mode + location are stored in `fleet.json`; a re-run (or `fleet update`) preserves
+them. Switching to client mode also removes any autostart a prior server install left.
 
 ## Development
 

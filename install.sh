@@ -18,12 +18,27 @@ OS="$(uname -s)"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 export PATH
 
+# Positional args:  install.sh [server|client] [location]
+#   fleet install server            # a box that runs agents
+#   fleet install client laptop     # attach-only, tagged 'laptop'
+# (FLEET_MODE / FLEET_LOCATION env still work and take a back seat to these.)
+for _a in "$@"; do
+  case "$_a" in
+    server|client) FLEET_MODE="$_a" ;;
+    -*) echo "install: unknown option: $_a" >&2; exit 1 ;;
+    *) FLEET_LOCATION="$_a" ;;
+  esac
+done
+
 # server = full node: runs local agents + a login autostart.
 # client = attach-only: no local sessions, no autostart (this laptop).
-# Defaults to the mode chosen last time (so `fleet update` re-runs preserve it),
-# then server. Override explicitly with FLEET_MODE=client ./install.sh
-MODE="${FLEET_MODE:-$(cat "$HOME/.config/fleet/mode" 2>/dev/null || echo server)}"
-case "$MODE" in server|client) ;; *) echo "install: FLEET_MODE must be 'server' or 'client' (got: $MODE)" >&2; exit 1 ;; esac
+# Preserve the mode chosen last time (from fleet.json, then the legacy file), else server —
+# so a re-run / `fleet update` never silently resets it.
+MODE="${FLEET_MODE:-}"
+[ -z "$MODE" ] && MODE="$(jq -r '.mode // empty' "$HOME/.config/fleet/fleet.json" 2>/dev/null || true)"
+[ -z "$MODE" ] && MODE="$(cat "$HOME/.config/fleet/mode" 2>/dev/null || true)"
+[ -z "$MODE" ] && MODE=server
+case "$MODE" in server|client) ;; *) echo "install: mode must be 'server' or 'client' (got: $MODE)" >&2; exit 1 ;; esac
 
 # fleet needs git, jq, tmux to exist — provisioning them (plus Tailscale + claude)
 # is bootstrap/bootstrap.sh's job now, not the installer's. Fail clearly if the box

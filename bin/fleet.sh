@@ -847,14 +847,19 @@ cmd_remote_cc() {
   fqdn="$(tailscale status --json 2>/dev/null | jq -r --arg h "$host" '.Peer[]? | select(.HostName==$h) | .DNSName // empty' 2>/dev/null | sed 's/\.$//')"
   [[ -n "$fqdn" ]] || fqdn="$host"
   cmux="$(command -v cmux 2>/dev/null || echo /Applications/cmux.app/Contents/Resources/bin/cmux)"
+  # The two -CC terminals want OPPOSITE aggressive-resize: cmux fills the focused tab only
+  # with it ON (it sizes per-window and ON lets tmux apply that size); iTerm2 manages sizes
+  # itself and wants it OFF. Set the right one on the remote for the detected terminal.
+  local sshopt=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
   if [[ -x "$cmux" ]] && "$cmux" ping >/dev/null 2>&1; then
-    echo "cmux ssh-tmux (tmux -CC) -> $FLEET_SSH_USER@$fqdn"
+    ssh "${sshopt[@]}" "$FLEET_SSH_USER@$fqdn" 'tmux -S /tmp/tmux-$(id -u)/default setw -g aggressive-resize on 2>/dev/null' 2>/dev/null || true
+    echo "cmux ssh-tmux (tmux -CC, aggressive-resize on) -> $FLEET_SSH_USER@$fqdn"
     exec "$cmux" ssh-tmux "$FLEET_SSH_USER@$fqdn"
   fi
   if [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" ]]; then
-    echo "iTerm2 tmux -CC -> $FLEET_SSH_USER@$fqdn"
-    exec ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$FLEET_SSH_USER@$fqdn" \
-      "exec tmux -S /tmp/tmux-\$(id -u)/default -CC attach -t $SESSION"
+    echo "iTerm2 tmux -CC (aggressive-resize off) -> $FLEET_SSH_USER@$fqdn"
+    exec ssh -tt "${sshopt[@]}" "$FLEET_SSH_USER@$fqdn" \
+      "tmux -S /tmp/tmux-\$(id -u)/default setw -g aggressive-resize off 2>/dev/null; exec tmux -S /tmp/tmux-\$(id -u)/default -CC attach -t $SESSION"
   fi
   die "--CC (tmux control mode) needs cmux or iTerm2 — you're in ${TERM_PROGRAM:-an unknown terminal}. Plain attach: fleet remote $host"
 }

@@ -180,6 +180,34 @@ DESK
   [ -d /etc/polkit-1/rules.d ] && printf 'polkit.addRule(function(a,s){if(a.id=="org.freedesktop.login1.manage"&&s.user=="%s")return polkit.Result.YES;});\n' "$(id -un)" \
     | $SUDO tee /etc/polkit-1/rules.d/49-fleet-single-session.rules >/dev/null
   $SUDO rm -f /etc/polkit-1/rules.d/49-fleet-rdp-logout.rules 2>/dev/null || true   # old name
+  # GDM PreSession hook: the robust half of newest-login-wins. It runs as ROOT before a
+  # session starts and fires for BOTH console and grd remote-login (both go through GDM),
+  # so it can terminate the user's other graphical sessions even when the incoming session
+  # can't start yet to run the autostart above (the same-user-already-logged-in black screen).
+  local gdmdir=""
+  [ -d /etc/gdm3 ] && gdmdir=/etc/gdm3/PreSession || { [ -d /etc/gdm ] && gdmdir=/etc/gdm/PreSession; }
+  if [ -n "$gdmdir" ]; then
+    if ! $SUDO test -f "$gdmdir/Default" || $SUDO grep -q 'fleet: newest graphical login' "$gdmdir/Default" 2>/dev/null; then
+      $SUDO mkdir -p "$gdmdir"
+      $SUDO tee "$gdmdir/Default" >/dev/null <<'PRESESSION'
+#!/bin/sh
+# fleet: newest graphical login wins — terminate this user's OTHER graphical sessions
+# so console and RDP never coexist (avoids the same-user "black screen"). Runs as root.
+[ -n "$USER" ] || exit 0
+me="${XDG_SESSION_ID:-}"
+for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$USER" '$3==u{print $1}'); do
+  [ "$s" = "$me" ] && continue
+  case "$(loginctl show-session "$s" -p Type --value 2>/dev/null)" in
+    x11|wayland|mir) loginctl terminate-session "$s" >/dev/null 2>&1 ;;
+  esac
+done
+exit 0
+PRESESSION
+      $SUDO chmod +x "$gdmdir/Default"
+    else
+      echo "  · $gdmdir/Default exists (not fleet's) — leaving it; single-session via autostart only"
+    fi
+  fi
 }
 
 # gnome-remote-desktop in --system "remote login" mode: RDP straight into a real, headless

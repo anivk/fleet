@@ -93,6 +93,8 @@ the repo or count (existing clones are left in place). SSH by default; for HTTPS
 | `fleet spread` | Reverse `grid` — one window per agent again |
 | `fleet restart <name>` | Restart **one** agent in place (siblings untouched; revives dead panes). **Resumes** its last conversation (`claude --continue`); `--restart-fresh` for a clean start |
 | `fleet respawn [host]` | Revive any **dead** agents and start any that aren't running (resuming conversations). Local, or on a remote host over Tailscale — a manual watchdog |
+| `fleet boot {enable [--xvfb]\|disable}` | Start the fleet on **boot, before login** (Linux/systemd + linger); `--xvfb` adds a virtual display so `--chrome` agents run headless. See [Auto-start](#auto-start) |
+| `fleet caffeinate [--prevent-screen-lock]` / `fleet decaffeinate` | Keep the machine awake so long jobs aren't cut off by sleep (macOS `caffeinate` / Linux `systemd-inhibit`); optionally hold off the screen lock |
 | `fleet hosts` | List remote machines; `fleet hosts add <short> [host]` / `fleet hosts rm <short>` edit `fleet.json` |
 | `fleet config` | `path` / `edit` / `validate` the `fleet.json` config; `push [host] [--restart]` syncs it to your other machines |
 | `fleet remote ls` | List the configured hosts and their reachability (a bare `fleet remote` does this too) |
@@ -439,6 +441,10 @@ refuse rather than clobber. Already-running agents keep the old launcher until y
 [Tailscale](https://tailscale.com) with SSH on both ends and `fleet` on the remote's PATH.
 
 ## Requirements
+
+**Supported platforms: macOS and Ubuntu** — each as a **server** (runs agents) or a
+**client** (attach-only). Any mix of the two works (a Mac laptop driving Ubuntu
+servers, an Ubuntu desktop + Mac VMs, etc.); other OSes aren't supported.
 
 **Core (every machine):**
 - **tmux** 3.x

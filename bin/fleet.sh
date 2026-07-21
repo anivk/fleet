@@ -1076,6 +1076,49 @@ UNIT
   esac
 }
 
+# fleet caffeinate [--prevent-screen-lock] | fleet decaffeinate — keep the machine
+# awake (so long-running agents aren't interrupted by sleep) across macOS + Linux.
+# macOS: `caffeinate`. Linux: a `systemd-inhibit` block. A backgrounded process holds
+# the assertion; the pidfile tracks it so `decaffeinate` (or `caffeinate status`) works.
+_caffeine_pid() { printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/fleet/caffeinate.pid"; }
+cmd_caffeinate() {
+  local lock=0 a; for a in "$@"; do case "$a" in --prevent-screen-lock) lock=1 ;; status) cmd_caffeinate_status; return ;; esac; done
+  local pid; pid="$(_caffeine_pid)"; mkdir -p "$(dirname "$pid")"
+  if [[ -f "$pid" ]] && kill -0 "$(cat "$pid")" 2>/dev/null; then
+    echo "already caffeinated (pid $(cat "$pid"))"; return
+  fi
+  case "$(uname -s)" in
+    Darwin)
+      command -v caffeinate >/dev/null || die "caffeinate not found"
+      # -i idle, -m disk, -s system(on AC); +lock: -d display + -u user-active.
+      local flags="-i -m -s"; [[ "$lock" == 1 ]] && flags="-d -u $flags"
+      nohup caffeinate $flags >/dev/null 2>&1 & ;;
+    Linux)
+      command -v systemd-inhibit >/dev/null || die "systemd-inhibit not found (systemd-logind) — can't inhibit sleep"
+      # sleep = suspend/hibernate; +lock: idle too, which holds off the screensaver/lock.
+      local what="sleep"; [[ "$lock" == 1 ]] && what="sleep:idle"
+      nohup systemd-inhibit --what="$what" --who=fleet --why="fleet caffeinate" --mode=block sleep infinity >/dev/null 2>&1 & ;;
+    *) die "caffeinate: unsupported OS ($(uname -s))" ;;
+  esac
+  echo $! > "$pid"
+  echo "caffeinated (pid $!) — sleep prevented$([[ "$lock" == 1 ]] && echo ' + screen lock')"
+  echo "  stop with: fleet decaffeinate"
+}
+cmd_decaffeinate() {
+  local pid; pid="$(_caffeine_pid)"
+  if [[ -f "$pid" ]]; then
+    local p; p="$(cat "$pid")"
+    pkill -P "$p" 2>/dev/null || true      # the systemd-inhibit `sleep infinity` child
+    kill "$p" 2>/dev/null && echo "decaffeinated" || echo "not caffeinated (removed stale pidfile)"
+    rm -f "$pid"
+  else echo "not caffeinated"; fi
+}
+cmd_caffeinate_status() {
+  local pid; pid="$(_caffeine_pid)"
+  if [[ -f "$pid" ]] && kill -0 "$(cat "$pid")" 2>/dev/null; then echo "caffeinated (pid $(cat "$pid"))"
+  else echo "not caffeinated"; fi
+}
+
 # Generate a minimal Fleet.app wrapper around `<fbin> tray run` so macOS shows the
 # menubar agent as "Fleet" with NO Dock icon (LSUIElement). Regenerated each start,
 # so it always points at the current binary.
@@ -1293,6 +1336,7 @@ LAUNCH & LIFECYCLE
   fleet restart [--restart-fresh] <agent>   restart one agent in place (resumes)
   fleet respawn [host]              revive dead agents + start any missing (local or a host)
   fleet boot {enable [--xvfb]|disable}   start on boot before login (Linux); --xvfb runs --chrome agents headless
+  fleet caffeinate [--prevent-screen-lock] / decaffeinate   keep the machine awake (macOS + Linux)
 
 DRIVE AGENTS  (no need to attach)
   fleet send <agent> <text>         type text into an agent, then Enter
@@ -1354,6 +1398,8 @@ case "${1:-start}" in
   remote-install) shift; cmd_remote_install "$@" ;;  # clone + install fleet on a remote
   tray)    shift; cmd_tray "$@" ;;       # menubar monitor (start/stop/status/…)
   boot)    shift; cmd_boot "$@" ;;       # start on boot before login (Linux/systemd)
+  caffeinate)   shift; cmd_caffeinate "$@" ;;  # keep the machine awake (mac + linux)
+  decaffeinate) cmd_decaffeinate ;;            # let it sleep again
   hosts)   shift; cmd_hosts "$@" ;;      # list/add/rm remote hosts (or --json for the tray)
   config)  shift; cmd_config "$@" ;;     # fleet.json: path | edit | push [host]
   send)    shift; cmd_send "$@" ;;       # type text into a running agent's pane

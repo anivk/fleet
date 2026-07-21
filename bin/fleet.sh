@@ -665,6 +665,22 @@ cmd_update() {
   target="${args[0]:-}"
   [[ -n "$target" ]] && { remote_exec "$(resolve_host "$target")" update; return; }
 
+  # Bundled binary: no git checkout — re-download the latest release binary in place
+  # (over itself; the running process keeps its inode), then upgrade the agent CLIs.
+  if [[ -n "${FLEET_BUNDLED:-}" ]]; then
+    local self="${FLEET_BIN:-$(command -v fleet 2>/dev/null)}" dir
+    [[ -n "$self" ]] || die "can't locate the fleet binary to update"
+    dir="$(dirname "$self")"
+    echo "update: fetching the latest fleet release -> $dir/fleet"
+    FLEET_INSTALL_DIR="$dir" sh "$FLEET_HOME/get.sh" || die "download failed"
+    if [[ "$nocl" == 0 && -x "$FLEET_HOME/bootstrap/bootstrap.sh" ]]; then
+      echo "update: upgrading claude/codex…"
+      UPGRADE_CLIS=1 "$FLEET_HOME/bootstrap/bootstrap.sh" --clis-only >/dev/null 2>&1 || true
+    fi
+    echo "  done — new binary in place; running agents keep the old launcher until restart."
+    return
+  fi
+
   command -v git >/dev/null || die "git not installed"
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   [[ -d "$root/.git" ]] || die "not a git checkout: $root — can't self-update"

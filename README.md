@@ -421,24 +421,20 @@ key (B), which is unambiguous — the box has exactly one.
 
 ## Updating
 
-**Binary install:** re-run `get.sh` to pull the latest release binary (or upgrade the
-agent CLIs with `fleet bootstrap --clis-only`):
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh
+fleet update            # update this machine (see below); --no-clis skips the CLI upgrade
+fleet update <host>     # do the same on another machine over Tailscale SSH
 ```
 
-**Source checkout:** `fleet update` fast-forwards the checkout and re-wires:
+- **Binary install** — `fleet update` downloads the latest release binary and replaces
+  itself in place, then upgrades `claude`/`codex`. (Equivalent: re-run `curl … get.sh | sh`.)
+- **Source checkout** — `fleet update` `git fetch`es and **fast-forwards only** — a
+  dirty tree or local commits make it refuse rather than clobber — then re-runs the
+  installer to re-wire config/tmux/hooks.
 
-```sh
-fleet update            # fast-forward this checkout + re-wire; upgrade the agent CLIs
-fleet update laptop     # do the same on another machine over Tailscale SSH
-```
-
-It `git fetch`es and **fast-forwards only** — a dirty tree or local commits make it
-refuse rather than clobber. Already-running agents keep the old launcher until you
-`fleet restart <name>` (or `fleet stop && fleet start`). The remote hop requires
-[Tailscale](https://tailscale.com) with SSH on both ends and `fleet` on the remote's PATH.
+Already-running agents keep the old launcher until you `fleet restart <name>` (or
+`fleet stop && fleet start`). The remote hop requires [Tailscale](https://tailscale.com)
+with SSH on both ends and `fleet` on the remote's PATH.
 
 ## Requirements
 

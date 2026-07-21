@@ -282,17 +282,23 @@ _ensure_grd() {
   # root:root 600, which it can't read → "TLS not configured properly". Hand both to it.
   local grd_user; grd_user="$($SUDO systemctl show gnome-remote-desktop.service -p User --value 2>/dev/null)"
   [ -n "$grd_user" ] && $SUDO chown "$grd_user" "$crt" "$key" 2>/dev/null || true
-  # RDP-layer password. Skip the prompt entirely on re-runs when credentials are already
-  # set — unless RDP_PASSWORD is given explicitly to rotate them.
-  local rpass="${RDP_PASSWORD:-}"
-  if [ -z "$rpass" ] && $SUDO grdctl --system status 2>/dev/null | grep -i 'Username:' | grep -qv '(empty)'; then
+  # RDP-layer password. Detect whether credentials already exist (read grdctl status
+  # once) so a re-run neither re-prompts nor falsely warns "no password set". A set
+  # username reads as "Username: <name>"; an unset one as "Username: (empty)".
+  local rpass="${RDP_PASSWORD:-}" creds_set=0 creds_changed=0
+  $SUDO grdctl --system status 2>/dev/null | grep -iqE 'username:[[:space:]]*[^[:space:](]' && creds_set=1
+  if [ -n "$rpass" ]; then
+    :                                                     # explicit rotate, handled below
+  elif [ "$creds_set" = 1 ]; then
     echo "  = RDP credentials already set — keeping them (RDP_PASSWORD=… to rotate)"
-  elif [ -z "$rpass" ] && [ -t 0 ]; then
+  elif [ -t 0 ]; then
     printf "  set an RDP password for %s (blank to skip): " "$(id -un)"; stty -echo 2>/dev/null; read -r rpass; stty echo 2>/dev/null; echo
   fi
   $SUDO grdctl --system rdp set-tls-cert "$crt" >/dev/null 2>&1 || true
   $SUDO grdctl --system rdp set-tls-key  "$key" >/dev/null 2>&1 || true
-  [ -n "$rpass" ] && $SUDO grdctl --system rdp set-credentials "$(id -un)" "$rpass" >/dev/null 2>&1 || true
+  if [ -n "$rpass" ]; then
+    $SUDO grdctl --system rdp set-credentials "$(id -un)" "$rpass" >/dev/null 2>&1 && { creds_set=1; creds_changed=1; }
+  fi
   $SUDO grdctl --system rdp disable-view-only >/dev/null 2>&1 || true   # allow remote control
   $SUDO grdctl --system rdp enable >/dev/null 2>&1 || true
   $SUDO systemctl enable gnome-remote-desktop.service >/dev/null 2>&1 || true
@@ -301,8 +307,11 @@ _ensure_grd() {
   command -v xrdp >/dev/null 2>&1 && $SUDO systemctl disable --now xrdp xrdp-sesman >/dev/null 2>&1 || true
   rm -f "$HOME/.xsession" 2>/dev/null || true
   echo "  + gnome-remote-desktop on :3389 — RDP the real GNOME desktop over Tailscale (login: $(id -un))"
-  [ -z "$rpass" ] && echo "    ! no RDP password set — run: sudo grdctl --system rdp set-credentials $(id -un) <password>"
-  _rdp_client_file
+  [ "$creds_set" = 0 ] && echo "    ! no RDP password set — run: sudo grdctl --system rdp set-credentials $(id -un) <password>"
+  # Only (re)write the client .rdp when the password was just set/rotated, or the file
+  # doesn't exist yet — an idempotent re-run that keeps existing creds leaves it be.
+  if [ "$creds_changed" = 1 ] || [ ! -f "$HOME/.config/fleet/$(hostname).rdp" ]; then _rdp_client_file
+  else echo "  = RDP client file already present → $HOME/.config/fleet/$(hostname).rdp"; fi
   return 0
 }
 

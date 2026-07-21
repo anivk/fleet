@@ -451,9 +451,10 @@ servers, an Ubuntu desktop + Mac VMs, etc.); other OSes aren't supported.
 
 **Per feature:**
 - **`--chrome` browser agents** — a **graphical desktop** (`--chrome` attaches to a real
-  Chrome, so this isn't reliable headless), a **browser** (`fleet bootstrap --with-chrome`
-  installs Chrome/Chromium), and the **"Claude in Chrome" extension** installed from the
-  Web Store once by hand (there's no way to automate the extension install/connect)
+  Chrome, so it isn't reliable headless), a **browser** (`fleet bootstrap` installs
+  Chrome/Chromium **by default** — pass `--headless` to skip it on a true headless box),
+  and the **"Claude in Chrome" extension** installed from the Web Store once by hand
+  (the extension install/connect can't be automated)
 - **`fleet remote`** — [Tailscale](https://tailscale.com) with SSH on both ends
 - **Clipboard bridging** — the tmux config auto-selects the copy backend: `pbcopy` (macOS),
   `wl-copy` ([wl-clipboard](https://github.com/bugaevc/wl-clipboard), Linux/Wayland), or

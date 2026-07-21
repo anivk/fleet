@@ -4,7 +4,8 @@
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--with-chrome] [--no-claude]
+#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--headless] [--no-claude]
+#     (installs a browser for --chrome agents by default; --headless skips it)
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -14,16 +15,18 @@ OS="$(uname -s)"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 export PATH
 
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; WANT_CHROME=0; CLIS_ONLY=0
+# Chrome is installed by DEFAULT (most agents use --chrome); --headless skips it.
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; WANT_CHROME=1; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
     --with-codex) WANT_CODEX=1 ;;
     --with-xvfb)  WANT_XVFB=1 ;;    # virtual display for --chrome agents (headless boot)
-    --with-chrome) WANT_CHROME=1 ;; # a browser for --chrome agents (extension is manual)
+    --headless|--no-chrome) WANT_CHROME=0 ;;  # skip the browser (true headless server)
+    --with-chrome) WANT_CHROME=1 ;;           # (default; kept for compat)
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
-    -h|--help)    sed -n '2,9p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown arg: $a" >&2; exit 1 ;;
   esac
 done

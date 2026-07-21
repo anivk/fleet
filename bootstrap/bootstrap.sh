@@ -128,15 +128,14 @@ ensure_chrome() {
   fi
   _have_browser && echo "  + browser installed" || echo "  ! could not install a browser — install Chrome/Chromium manually"
 }
-# Remote desktop over Tailscale (RDP :3389) — for logging into the GUI to install the
-# Claude-in-Chrome extension etc. Modern GNOME (49+) is Wayland-only and xrdp is Xorg-only,
-# so xrdp CANNOT serve GNOME; prefer gnome-remote-desktop (GNOME's own RDP, serves the real
-# desktop headless). Fall back to xrdp + a lightweight xfce session only where there's no
-# GNOME. Either way a "single graphical session" autostart keeps console and RDP consistent:
-# the newest login boots the other. Over Tailscale we allow :3389 on the tailnet only.
+# Remote desktop over Tailscale (RDP :3389). Modern GNOME (49+) is Wayland-only and xrdp is
+# Xorg-only, so xrdp CANNOT serve GNOME; use gnome-remote-desktop (GNOME's own RDP). Fall
+# back to xrdp + xfce only where there's no GNOME. Over Tailscale we allow :3389 on the
+# tailnet only. CRITICAL: the RDP *client* must set 'use redirection server name:i:1' or
+# grd remote-login's server redirection never completes (session drops, LOGOFF_BY_USER) —
+# _ensure_grd writes a ready .rdp carrying that flag, since the client GUI hides it.
 ensure_rdp() {
   [ "$OS" = Linux ] || { echo "  · --with-rdp: Linux only"; return 0; }
-  _rdp_single_session      # console<->RDP consistency (runs in GNOME and xfce sessions alike)
   if command -v gnome-shell >/dev/null 2>&1; then
     _ensure_grd && { _rdp_ufw; return 0; }
     echo "  · gnome-remote-desktop unavailable — falling back to xrdp + xfce"
@@ -151,63 +150,34 @@ _rdp_ufw() {
     || $SUDO ufw allow 3389/tcp >/dev/null 2>&1 || true
 }
 
-# One graphical session per user: whichever graphical login happens last terminates the
-# others (so console and RDP never coexist). XDG autostart runs in GNOME and xfce alike;
-# loginctl terminate is permitted non-interactively by the polkit rule below. ssh/tty
-# sessions are Type=tty and left alone.
-_rdp_single_session() {
-  mkdir -p "$HOME/.local/bin" "$HOME/.config/autostart"
-  cat > "$HOME/.local/bin/fleet-session-uniq" <<'UNIQ'
-#!/bin/sh
-# fleet: keep one graphical session per user — newest login boots the others.
-me="${XDG_SESSION_ID:-}"
-for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$(id -un)" '$3==u{print $1}'); do
-  [ "$s" = "$me" ] && continue
-  case "$(loginctl show-session "$s" -p Type --value 2>/dev/null)" in
-    x11|wayland|mir) loginctl terminate-session "$s" >/dev/null 2>&1 ;;
-  esac
-done
-UNIQ
-  chmod +x "$HOME/.local/bin/fleet-session-uniq"
-  cat > "$HOME/.config/autostart/fleet-session-uniq.desktop" <<DESK
-[Desktop Entry]
-Type=Application
-Name=fleet single graphical session
-Exec=$HOME/.local/bin/fleet-session-uniq
-X-GNOME-Autostart-enabled=true
-NoDisplay=true
-DESK
-  [ -d /etc/polkit-1/rules.d ] && printf 'polkit.addRule(function(a,s){if(a.id=="org.freedesktop.login1.manage"&&s.user=="%s")return polkit.Result.YES;});\n' "$(id -un)" \
-    | $SUDO tee /etc/polkit-1/rules.d/49-fleet-single-session.rules >/dev/null
-  $SUDO rm -f /etc/polkit-1/rules.d/49-fleet-rdp-logout.rules 2>/dev/null || true   # old name
-  # GDM PreSession hook: the robust half of newest-login-wins. It runs as ROOT before a
-  # session starts and fires for BOTH console and grd remote-login (both go through GDM),
-  # so it can terminate the user's other graphical sessions even when the incoming session
-  # can't start yet to run the autostart above (the same-user-already-logged-in black screen).
-  local gdmdir=""
-  [ -d /etc/gdm3 ] && gdmdir=/etc/gdm3/PreSession || { [ -d /etc/gdm ] && gdmdir=/etc/gdm/PreSession; }
-  if [ -n "$gdmdir" ]; then
-    if ! $SUDO test -f "$gdmdir/Default" || $SUDO grep -q 'fleet: newest graphical login' "$gdmdir/Default" 2>/dev/null; then
-      $SUDO mkdir -p "$gdmdir"
-      $SUDO tee "$gdmdir/Default" >/dev/null <<'PRESESSION'
-#!/bin/sh
-# fleet: newest graphical login wins — terminate this user's OTHER graphical sessions
-# so console and RDP never coexist (avoids the same-user "black screen"). Runs as root.
-[ -n "$USER" ] || exit 0
-me="${XDG_SESSION_ID:-}"
-for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$USER" '$3==u{print $1}'); do
-  [ "$s" = "$me" ] && continue
-  case "$(loginctl show-session "$s" -p Type --value 2>/dev/null)" in
-    x11|wayland|mir) loginctl terminate-session "$s" >/dev/null 2>&1 ;;
-  esac
-done
-exit 0
-PRESESSION
-      $SUDO chmod +x "$gdmdir/Default"
-    else
-      echo "  · $gdmdir/Default exists (not fleet's) — leaving it; single-session via autostart only"
-    fi
-  fi
+# Write a ready-to-open .rdp for the client. The macOS/Windows RDP client MUST carry
+# 'use redirection server name:i:1' — without it grd remote-login's server redirection
+# never completes and the session drops (LOGOFF_BY_USER). The client GUI hides this flag,
+# so fleet ships a file with it (+ the box's Tailscale FQDN so the redirected reconnect
+# resolves). scp it to your Mac and open it.
+_rdp_client_file() {
+  local fqdn rdp; fqdn="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' 2>/dev/null | sed 's/\.$//')"
+  [ -n "$fqdn" ] || fqdn="$(hostname)"
+  mkdir -p "$HOME/.config/fleet"
+  rdp="$HOME/.config/fleet/$(hostname).rdp"
+  cat > "$rdp" <<RDP
+full address:s:${fqdn}:3389
+use redirection server name:i:1
+enablecredsspsupport:i:1
+authentication level:i:2
+allowed security protocols:s:*
+username:s:$(id -un)
+prompt for credentials on client:i:1
+networkautodetect:i:1
+bandwidthautodetect:i:1
+connection type:i:7
+screen mode id:i:2
+dynamic resolution:i:1
+redirectclipboard:i:1
+session bpp:i:32
+RDP
+  echo "  + RDP client file → $rdp"
+  echo "    on your Mac:  scp $(id -un)@${fqdn}:.config/fleet/$(hostname).rdp ~/Downloads/ && open ~/Downloads/$(hostname).rdp"
 }
 
 # gnome-remote-desktop in --system "remote login" mode: RDP straight into a real, headless
@@ -219,6 +189,12 @@ _ensure_grd() {
       $SUDO apt-get install -y gnome-remote-desktop >/dev/null 2>&1 || true; }
   fi
   command -v grdctl >/dev/null 2>&1 || return 1
+  # gnome-shell can segfault in libmutter-cogl on some GPUs (amdgpu/mesa) with an
+  # out-of-date mutter, leaving the RDP session black — pull the latest mutter/gnome-shell.
+  if command -v apt-get >/dev/null 2>&1; then
+    [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade 'libmutter-*' gnome-shell mutter-common >/dev/null 2>&1 || true
+  fi
   local dir=/etc/gnome-remote-desktop crt=/etc/gnome-remote-desktop/rdp-tls.crt key=/etc/gnome-remote-desktop/rdp-tls.key
   if ! $SUDO test -f "$crt"; then          # grd requires a TLS cert; self-sign one
     $SUDO mkdir -p "$dir"
@@ -244,6 +220,7 @@ _ensure_grd() {
   rm -f "$HOME/.xsession" 2>/dev/null || true
   echo "  + gnome-remote-desktop on :3389 — RDP the real GNOME desktop over Tailscale (login: $(id -un))"
   [ -z "$rpass" ] && echo "    ! no RDP password set — run: sudo grdctl --system rdp set-credentials $(id -un) <password>"
+  _rdp_client_file
   return 0
 }
 
@@ -279,7 +256,7 @@ _ensure_xrdp() {
     elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xfce4 >/dev/null 2>&1 || true
     fi
   fi
-  command -v startxfce4 >/dev/null 2>&1 && printf 'startxfce4\n' > "$HOME/.xsession"   # the single-session autostart handles console<->RDP
+  command -v startxfce4 >/dev/null 2>&1 && printf 'startxfce4\n' > "$HOME/.xsession"   # xrdp runs ~/.xsession
   $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
   $SUDO systemctl restart xrdp >/dev/null 2>&1 || true
   echo "  + xrdp on :3389 — RDP to this box's Tailscale name/IP (xfce desktop)"

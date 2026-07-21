@@ -671,9 +671,15 @@ resolve_host() {
 # literal (attach/update) — not user free-text — so it's safe inline.
 remote_exec() {
   local host=$1 sub=$2
-  command -v tailscale >/dev/null || die "tailscale not installed"
-  echo "fleet -> $FLEET_SSH_USER@$host  (tailscale ssh): $sub"
-  exec tailscale ssh "$FLEET_SSH_USER@$host" \
+  command -v ssh >/dev/null || die "ssh not installed"
+  echo "fleet -> $FLEET_SSH_USER@$host  (tailscale): $sub"
+  # `attach` needs a PTY for tmux. `tailscale ssh` won't allocate one in command mode
+  # (and rejects -t), so use plain `ssh -tt` over the tailnet: the box's Tailscale SSH
+  # intercepts port 22 keylessly, and -tt forces the PTY. Host-key checking is skipped
+  # because the tailnet transport (WireGuard + Tailscale-SSH ACLs) already authenticates
+  # the peer — and Tailscale rotates the box's SSH host key on reinstall anyway.
+  exec ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    "$FLEET_SSH_USER@$host" \
     "sh -lc 'command -v fleet >/dev/null 2>&1 && exec fleet $sub || exec \"\$(cat ~/.config/fleet/home 2>/dev/null || echo ~/.fleet)\"/bin/fleet.sh $sub'"
 }
 
@@ -724,9 +730,14 @@ cmd_update() {
   echo "update: $root"
   before="$(git -C "$root" rev-parse --short HEAD)"
   git -C "$root" fetch --quiet origin || die "fetch failed"
-  # Fast-forward only: refuse to merge or rewrite over local commits / dirty tree.
-  git -C "$root" merge --ff-only '@{u}' >/dev/null 2>&1 \
-    || die "can't fast-forward $root (local changes or diverged branch) — commit/stash there, then retry"
+  # Fast-forward only: refuse to merge or rewrite over local commits / dirty tree. Fall
+  # back to origin/<branch> when the branch has no upstream configured (@{u} would fail
+  # even on a clean, in-sync tree and wrongly report "diverged").
+  local branch up
+  branch="$(git -C "$root" rev-parse --abbrev-ref HEAD)"
+  up="$(git -C "$root" rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "origin/$branch")"
+  git -C "$root" merge --ff-only "$up" >/dev/null 2>&1 \
+    || die "can't fast-forward $root (diverged from $up, or local commits) — commit/stash there, then retry"
   after="$(git -C "$root" rev-parse --short HEAD)"
 
   if [[ "$before" == "$after" ]]; then

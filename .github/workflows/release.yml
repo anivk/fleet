@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build fleet (linux/${{ matrix.arch }})
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -o "fleet-linux-${{ matrix.arch }}" .
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -ldflags "-X main.version=${{ github.ref_name }}" -o "fleet-linux-${{ matrix.arch }}" .
       - uses: softprops/action-gh-release@v2
         with:
           files: fleet-linux-${{ matrix.arch }}
@@ -40,7 +40,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build fleet (darwin/${{ matrix.arch }})
-        run: CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -o "fleet-darwin-${{ matrix.arch }}" .
+        run: CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -ldflags "-X main.version=${{ github.ref_name }}" -o "fleet-darwin-${{ matrix.arch }}" .
       - uses: softprops/action-gh-release@v2
         with:
           files: fleet-darwin-${{ matrix.arch }}

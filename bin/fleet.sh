@@ -660,19 +660,27 @@ remote_exec() {
 # host: run `fleet update` on that machine over Tailscale SSH instead.
 # Note: already-running agents keep the old launcher until you restart them.
 cmd_update() {
-  local target="" nocl=0 root before after a args=()
-  for a in "$@"; do case "$a" in --no-clis) nocl=1 ;; *) args+=("$a") ;; esac; done
+  local target="" nocl=0 force=0 root before after a args=()
+  for a in "$@"; do case "$a" in --no-clis) nocl=1 ;; --force|-f) force=1 ;; *) args+=("$a") ;; esac; done
   target="${args[0]:-}"
   [[ -n "$target" ]] && { remote_exec "$(resolve_host "$target")" update; return; }
 
-  # Bundled binary: no git checkout — re-download the latest release binary in place
+  # Bundled binary: no git checkout — download the latest release binary in place
   # (over itself; the running process keeps its inode), then upgrade the agent CLIs.
+  # Check the latest tag first and skip if we're already current (unless --force).
   if [[ -n "${FLEET_BUNDLED:-}" ]]; then
-    local self="${FLEET_BIN:-$(command -v fleet 2>/dev/null)}" dir
+    local self="${FLEET_BIN:-$(command -v fleet 2>/dev/null)}" dir cur latest
     [[ -n "$self" ]] || die "can't locate the fleet binary to update"
-    dir="$(dirname "$self")"
-    echo "update: fetching the latest fleet release -> $dir/fleet"
-    FLEET_INSTALL_DIR="$dir" sh "$FLEET_HOME/get.sh" || die "download failed"
+    dir="$(dirname "$self")"; cur="${FLEET_VERSION:-dev}"
+    latest="$(curl -fsSL https://api.github.com/repos/anivk/fleet/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null || true)"
+    if [[ "$force" == 0 && -n "$latest" && "$cur" != dev && "$cur" == "$latest" ]]; then
+      echo "update: already up to date ($cur)"; return
+    fi
+    [[ -z "$latest" && "$force" == 0 ]] && echo "update: couldn't reach GitHub to check the version — downloading anyway"
+    echo "update: $cur -> ${latest:-latest}…"
+    # FLEET_VERSION=latest overrides the binary's own version (inherited in the env)
+    # so get.sh fetches the latest release, not the version we're on.
+    FLEET_VERSION=latest FLEET_INSTALL_DIR="$dir" sh "$FLEET_HOME/get.sh" || die "download failed"
     if [[ "$nocl" == 0 && -x "$FLEET_HOME/bootstrap/bootstrap.sh" ]]; then
       echo "update: upgrading claude/codex…"
       UPGRADE_CLIS=1 "$FLEET_HOME/bootstrap/bootstrap.sh" --clis-only >/dev/null 2>&1 || true
@@ -1433,6 +1441,7 @@ case "${1:-start}" in
   stop)    tmux kill-session -t "$SESSION" 2>/dev/null && echo "fleet stopped" || echo "fleet not running" ;;
   restart) shift; cmd_restart "$@" ;;
   respawn) shift; cmd_respawn "$@" ;;    # revive dead agents + start missing (local or host)
+  version|--version|-v) echo "fleet ${FLEET_VERSION:-dev}" ;;
   help|-h|--help) cmd_help ;;            # the full command reference
   *)       die "unknown command '${1}' — run 'fleet help'" ;;
 esac

@@ -15,9 +15,21 @@ import (
 	"github.com/anivk/fleet/internal/tray"
 )
 
+// version is stamped at release time via -ldflags "-X main.version=vX.Y.Z"; "dev"
+// for local/source builds. Used by `fleet version` and `fleet update`'s check.
+var version = "dev"
+
 func main() {
 	args := os.Args[1:]
 	self, _ := os.Executable()
+
+	if len(args) >= 1 {
+		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Println("fleet", version)
+			return
+		}
+	}
 
 	// `fleet tray` / `fleet tray run` runs the menubar app in this process. Other
 	// tray subcommands (start/stop/status) fall through to the bash launcher, which
@@ -40,9 +52,10 @@ func main() {
 		os.Exit(1)
 	}
 	env := append(os.Environ(),
-		"FLEET_HOME="+dir, // the launcher self-locates here for shell/tmux/hooks
-		"FLEET_BIN="+self, // so it (and the tray) re-invoke this same binary
-		"FLEET_BUNDLED=1", // install.sh skips the shell-function wiring (the binary IS the command)
+		"FLEET_HOME="+dir,        // the launcher self-locates here for shell/tmux/hooks
+		"FLEET_BIN="+self,        // so it (and the tray) re-invoke this same binary
+		"FLEET_BUNDLED=1",        // install.sh skips the shell-function wiring (the binary IS the command)
+		"FLEET_VERSION="+version, // the launcher's `update` compares this to the latest release
 	)
 	argv := append([]string{bash, sh}, args...)
 	if err := syscall.Exec(bash, argv, env); err != nil {

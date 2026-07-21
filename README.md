@@ -426,8 +426,9 @@ fleet update            # update this machine (see below); --no-clis skips the C
 fleet update <host>     # do the same on another machine over Tailscale SSH
 ```
 
-- **Binary install** — `fleet update` downloads the latest release binary and replaces
-  itself in place, then upgrades `claude`/`codex`. (Equivalent: re-run `curl … get.sh | sh`.)
+- **Binary install** — `fleet update` checks the latest release first: if you're already
+  on it, it does nothing; otherwise it replaces the binary in place and upgrades
+  `claude`/`codex`. `--force` re-downloads regardless; `fleet version` shows what you're on.
 - **Source checkout** — `fleet update` `git fetch`es and **fast-forwards only** — a
   dirty tree or local commits make it refuse rather than clobber — then re-runs the
   installer to re-wire config/tmux/hooks.

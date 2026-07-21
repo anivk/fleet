@@ -44,13 +44,14 @@ _cfgdir="${XDG_CONFIG_HOME:-$HOME/.config}/fleet"
 FLEET_JSON="${FLEET_JSON:-$_cfgdir/fleet.json}"
 STATE_DIR="$_cfgdir/state"
 FLEET_STATE_TTL="${FLEET_STATE_TTL:-900}"   # state files older than this ⇒ scrape
-# Pin the tmux socket to a fixed path so `fleet` reaches the SAME server from any login
-# context. A bare `tmux` derives its socket dir from the ambient TMUX_TMPDIR/XDG_RUNTIME_DIR,
-# which differ between console, RDP/xfce and ssh sessions — so a running fleet looked "not
-# running" from a different shell. /tmp is one fixed global path in every context; keep it
-# short too (AF_UNIX caps socket paths at ~104 chars). Route every tmux call through this
-# wrapper; `exec tmux` sites pass -S explicitly (exec bypasses shell functions).
-TMUX_SOCK="${FLEET_TMUX_SOCK:-/tmp/fleet-$(id -u).sock}"
+# Pin the tmux socket so `fleet` reaches the SAME server from any login context (a bare
+# `tmux` derives its dir from the ambient TMUX_TMPDIR/XDG_RUNTIME_DIR, which differ between
+# console/RDP/ssh — so a running fleet looked "not running" from a different shell). We pin
+# to tmux's DEFAULT socket LOCATION (/tmp/tmux-<uid>/default) rather than a private path, so
+# the fleet session is also what a plain `tmux` and cmux's `ssh-tmux` (tmux -CC control mode)
+# attach — giving the native "iTerm tmux integration" experience. Absolute path, so fleet's
+# own commands still find it regardless of TMUX_TMPDIR. Override with FLEET_TMUX_SOCK.
+TMUX_SOCK="${FLEET_TMUX_SOCK:-/tmp/tmux-$(id -u)/default}"
 # tmux refuses to start or attach when $TERM has no terminfo entry on THIS host — common
 # over ssh from Ghostty/Kitty/WezTerm to a box that lacks their terminfo ("missing or
 # unsuitable terminal: xterm-ghostty"). Resolve a TERM that exists here, keeping the real
@@ -347,6 +348,7 @@ cmd_start() {
   [[ "$MODE" == client ]] && die "client mode: this machine doesn't run local agents — attach a server with 'fleet remote <host>'. Force once with: FLEET_MODE=server fleet start"
   command -v tmux >/dev/null || die "tmux not installed (sudo apt install -y tmux)"
   command -v "$CLAUDE" >/dev/null || die "claude not found: $CLAUDE"
+  mkdir -p -m 700 "$(dirname "$TMUX_SOCK")" 2>/dev/null || true   # tmux socket dir (0700)
   # Resume each agent's last conversation by default (claude --continue, falling
   # back to fresh if there's nothing to continue). `--fresh` forces a cold start.
   local a; for a in "$@"; do [[ "$a" == --fresh ]] && FLEET_RESUME=0; done
@@ -819,20 +821,19 @@ cmd_remote() {
   remote_exec "$host" attach
 }
 
-# fleet remote <host> --cmux — open the remote fleet attach in a NEW cmux workspace
-# (cmux.app, macOS). Run it from inside cmux: the cmux CLI only accepts cmux-spawned
-# callers unless CMUX_SOCKET_PASSWORD is set. cmux gives the workspace a PTY, so the
-# remote `fleet attach` (tmux) works; SSH goes over the tailnet keylessly (Tailscale SSH).
+# fleet remote <host> --cmux — mirror the remote fleet into cmux NATIVELY via tmux control
+# mode (cmux `ssh-tmux`, i.e. `tmux -CC`): each window becomes a cmux tab, each pane a
+# native split — the iTerm2-style integration. Fleet's session is on tmux's default socket
+# (see TMUX_SOCK), which is exactly what `ssh-tmux` attaches. Run it from inside cmux (its
+# CLI only accepts cmux-spawned callers), with the "Remote tmux" beta setting enabled.
 cmd_remote_cmux() {
   local host=$1 cmux fqdn
   cmux="$(command -v cmux 2>/dev/null || echo /Applications/cmux.app/Contents/Resources/bin/cmux)"
   [[ -x "$cmux" ]] || die "cmux not found (install cmux.app, or add its CLI to PATH)"
   fqdn="$(tailscale status --json 2>/dev/null | jq -r --arg h "$host" '.Peer[]? | select(.HostName==$h) | .DNSName // empty' 2>/dev/null | sed 's/\.$//')"
   [[ -n "$fqdn" ]] || fqdn="$host"
-  echo "cmux -> $FLEET_SSH_USER@$fqdn : fleet attach"
-  exec "$cmux" ssh "$FLEET_SSH_USER@$fqdn" --name "fleet: $host" \
-    --ssh-option StrictHostKeyChecking=no --ssh-option UserKnownHostsFile=/dev/null \
-    --command 'fleet attach'
+  echo "cmux ssh-tmux (tmux -CC) -> $FLEET_SSH_USER@$fqdn"
+  exec "$cmux" ssh-tmux "$FLEET_SSH_USER@$fqdn"
 }
 
 # fleet rdp-reset [host] — terminate this user's hung graphical (wayland/x11) sessions.

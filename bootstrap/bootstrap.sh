@@ -168,7 +168,30 @@ ensure_rdp() {
       elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xfce4 >/dev/null 2>&1 || true
       fi
     fi
-    command -v startxfce4 >/dev/null 2>&1 && printf 'startxfce4\n' > "$HOME/.xsession"
+    # ~/.xsession = what xrdp runs. On connect, log out this user's physical console
+    # (seat0) session first — so the desk isn't left logged in and GNOME won't refuse
+    # the remote login. The xrdp session is seatless, so filtering on seat0 never kills
+    # it. loginctl needs a polkit rule (below) to terminate sessions non-interactively.
+    if command -v startxfce4 >/dev/null 2>&1; then
+      cat > "$HOME/.xsession" <<'XSESSION'
+#!/bin/sh
+# fleet: log out this user's console (seat0) session on RDP connect (see bootstrap).
+_me="${XDG_SESSION_ID:-}"
+for _s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$(id -un)" '$3==u{print $1}'); do
+  [ "$_s" = "$_me" ] && continue
+  [ "$(loginctl show-session "$_s" -p Seat --value 2>/dev/null)" = seat0 ] || continue
+  loginctl terminate-session "$_s" >/dev/null 2>&1
+done
+exec startxfce4
+XSESSION
+      chmod +x "$HOME/.xsession"
+      # Let this user manage their own login sessions without an interactive polkit
+      # prompt (the terminate-session call above runs headless inside the X session).
+      if [ -d /etc/polkit-1/rules.d ]; then
+        printf 'polkit.addRule(function(a,s){if(a.id=="org.freedesktop.login1.manage"&&s.user=="%s")return polkit.Result.YES;});\n' "$(id -un)" \
+          | $SUDO tee /etc/polkit-1/rules.d/49-fleet-rdp-logout.rules >/dev/null
+      fi
+    fi
     $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
     $SUDO systemctl restart xrdp >/dev/null 2>&1 || true
     if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qiw active; then

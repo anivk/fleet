@@ -183,6 +183,31 @@ install_cli() {
   if command -v "$c" >/dev/null 2>&1; then echo "  + $c installed"
   else echo "  ! could not install $c — install it manually (codex needs node/npm, or brew)"; fi
 }
+# The claude/codex CLIs land in ~/.local/bin. Their installer adds that to ~/.profile
+# (login shells only), so `claude`/`codex` are "command not found" in a plain non-login
+# shell or a new tmux pane. Add it to the interactive rc too.
+ensure_local_bin_path() {
+  case "$OS/${SHELL##*/}" in Darwin/*) return 0 ;; esac
+  local rc; case "${SHELL##*/}" in zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
+  [ -f "$rc" ] || touch "$rc"
+  grep -q '\.local/bin' "$rc" 2>/dev/null && { echo "  = ~/.local/bin already on PATH ($rc)"; return 0; }
+  printf '\n# fleet: agent CLIs live in ~/.local/bin\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+  echo "  + $rc: added ~/.local/bin to PATH (open a new shell or 'source $rc')"
+}
+# Device/browser login for a CLI — interactive only (needs a terminal to show the
+# prompt); skipped when already authed or run unattended.
+_login() {
+  local c=$1 authed=0
+  command -v "$c" >/dev/null 2>&1 || return 0
+  case "$c" in
+    claude) { [ -f "$HOME/.claude/.credentials.json" ] || grep -qs oauthAccount "$HOME/.claude.json" 2>/dev/null || [ -n "${ANTHROPIC_API_KEY:-}" ]; } && authed=1 ;;
+    codex)  { codex login status 2>/dev/null | grep -qiE 'logged in (using|with|as|via)' || [ -n "${OPENAI_API_KEY:-}" ]; } && authed=1 ;;
+  esac
+  [ "$authed" = 1 ] && { echo "  = $c already logged in"; return 0; }
+  [ -t 0 ] || { echo "  · $c not logged in — run '$c login' from a terminal"; return 0; }
+  echo "  logging in to $c — approve the browser/device prompt it prints…"
+  "$c" login || echo "  ! $c login didn't finish — run '$c login' later"
+}
 
 if [ "$CLIS_ONLY" = 0 ]; then
   echo "bootstrap: provisioning $(id -un) on $OS"
@@ -229,6 +254,11 @@ fi
 [ "$WANT_CODEX" = 1 ] && ensure_node
 [ "$WANT_CLAUDE" = 1 ] && install_cli claude
 [ "$WANT_CODEX" = 1 ] && install_cli codex
+
+# 4. PATH fix + device/browser login (interactive only)
+ensure_local_bin_path
+[ "$WANT_CLAUDE" = 1 ] && _login claude
+[ "$WANT_CODEX" = 1 ]  && _login codex
 
 echo
 echo "bootstrap done. next:"

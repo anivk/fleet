@@ -473,14 +473,24 @@ cmd_grid() {
     for m in $members; do
       src="$(pane_for "$(disp "$m")")"        # session:win.pane, or empty if not running
       [[ -n "$src" ]] || continue
-      if [[ -n "$base" && "${src%.*}" == "$base" ]]; then count=$((count+1)); continue; fi  # already here
-      if [[ -z "$base" || "$count" -ge "$per" ]]; then
-        # start a new page window: page 1 = grid-<group>, page N>1 = grid-<group>-N.
-        wname="$gname"; [[ "$page" -gt 1 ]] && wname="$gname-$page"
-        tmux rename-window -t "${src%.*}" "$wname" 2>/dev/null || true
+      if [[ -z "$base" ]]; then               # first member -> its window becomes page 1
+        tmux rename-window -t "${src%.*}" "$gname" 2>/dev/null || true
+        base="${src%.*}"; count=1; page=2; continue
+      fi
+      if [[ "${src%.*}" == "$base" && "$count" -lt "$per" ]]; then
+        count=$((count+1)); continue          # already on the current page, within the limit
+      fi
+      if [[ "$count" -ge "$per" ]]; then       # current page full -> start a new page
+        wname="$gname-$page"
+        if [[ "${src%.*}" == "$base" ]]; then  # pane sits in an over-full page: break it out
+          tmux break-pane -d -s "$src" -n "$wname" 2>/dev/null || true
+          src="$(pane_for "$(disp "$m")")"     # re-find it in the new window
+        else                                   # pane has its own window: adopt it as the page
+          tmux rename-window -t "${src%.*}" "$wname" 2>/dev/null || true
+        fi
         base="${src%.*}"; count=1; page=$((page+1))
-      else
-        tmux select-layout -t "$base" tiled 2>/dev/null || true   # make room before the join
+      else                                     # room on the current page -> join in
+        tmux select-layout -t "$base" tiled 2>/dev/null || true
         tmux join-pane -s "$src" -t "$base" 2>/dev/null || true
         count=$((count+1))
       fi

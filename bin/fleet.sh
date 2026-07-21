@@ -873,6 +873,25 @@ cmd_rdp_reset() {
   echo "rdp-reset: cleared $n hung graphical session(s)"
 }
 
+# fleet resize [host] — nudge every window to the attached client's size (tmux
+# resize-window -A). Handy under cmux/iTerm tmux -CC if a tab opens smaller than the
+# client and leaves an empty gutter. On a host: run it there over Tailscale SSH.
+cmd_resize() {
+  local host="${1:-}"
+  if [[ -n "$host" ]]; then
+    local sshhost; sshhost="$(_sshhost "$host")"
+    echo "resize -> $sshhost"
+    exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$sshhost" \
+      "sh -lc 'command -v fleet >/dev/null 2>&1 && fleet resize || \"\$(cat ~/.config/fleet/home 2>/dev/null || echo ~/.fleet)\"/bin/fleet.sh resize'"
+  fi
+  tmux has-session -t "$SESSION" 2>/dev/null || die "fleet not running"
+  local w n=0
+  for w in $(tmux list-windows -t "$SESSION" -F '#{window_id}' 2>/dev/null); do
+    tmux resize-window -A -t "$w" 2>/dev/null && n=$((n+1))
+  done
+  echo "resize: nudged $n window(s) to the client size"
+}
+
 # Resolve a host alias to a full user@host for tailscale ssh (pass through an
 # explicit user@... target untouched).
 _sshhost() {
@@ -1617,6 +1636,7 @@ case "${1:-start}" in
   remote)  shift; cmd_remote "$@" ;;     # attach another machine's fleet over tailscale
   remote-ssh) shift; cmd_remote_ssh "$@" ;;  # a plain shell (or command) on a remote
   rdp-reset) shift; cmd_rdp_reset "$@" ;;    # clear hung RDP graphical sessions ([host])
+  resize)  shift; cmd_resize "$@" ;;         # nudge windows to the client size ([host])
   keys)    shift; cmd_keys "$@" ;;       # remote git auth: agent forwarding + per-host keys
   remote-install) shift; cmd_remote_install "$@" ;;  # clone + install fleet on a remote
   tray)    shift; cmd_tray "$@" ;;       # menubar monitor (start/stop/status/…)

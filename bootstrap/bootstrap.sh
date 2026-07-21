@@ -4,7 +4,7 @@
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--no-claude]
+#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--with-chrome] [--no-claude]
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -14,12 +14,13 @@ OS="$(uname -s)"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 export PATH
 
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; CLIS_ONLY=0
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; WANT_CHROME=0; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
     --with-codex) WANT_CODEX=1 ;;
-    --with-xvfb)  WANT_XVFB=1 ;;    # virtual display so --chrome agents run headless
+    --with-xvfb)  WANT_XVFB=1 ;;    # virtual display for --chrome agents (headless boot)
+    --with-chrome) WANT_CHROME=1 ;; # a browser for --chrome agents (extension is manual)
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
     -h|--help)    sed -n '2,9p' "$0"; exit 0 ;;
@@ -88,6 +89,33 @@ ensure_xvfb() {
   fi
   command -v Xvfb >/dev/null 2>&1 && echo "  + xvfb installed" || echo "  ! could not install xvfb — install your distro's Xvfb package"
 }
+# A Chromium-based browser for --chrome agents. Google Chrome where available (amd64
+# Linux via Google's .deb; macOS via brew cask), else Chromium. NOTE: the "Claude in
+# Chrome" extension is a Web Store install you do once in the browser by hand — this
+# only provides the browser.
+_have_browser() { for b in google-chrome google-chrome-stable chromium chromium-browser; do command -v "$b" >/dev/null 2>&1 && return 0; done; return 1; }
+ensure_chrome() {
+  _have_browser && { echo "  = browser present"; return 0; }
+  echo "  installing a browser for --chrome agents…"
+  if [ "$OS" = Darwin ]; then
+    command -v brew >/dev/null 2>&1 && brew install --cask google-chrome >/dev/null 2>&1 || echo "  ! install Chrome from https://google.com/chrome"
+  elif command -v apt-get >/dev/null 2>&1; then
+    if [ "$(uname -m)" = x86_64 ]; then
+      local deb; deb="$(mktemp)"; mv "$deb" "$deb.deb"; deb="$deb.deb"
+      if curl -fsSL -o "$deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb 2>/dev/null; then
+        $SUDO apt-get install -y "$deb" >/dev/null 2>&1 || { $SUDO dpkg -i "$deb" >/dev/null 2>&1; $SUDO apt-get -f install -y >/dev/null 2>&1; }
+      fi
+      rm -f "$deb"
+    fi
+    # arm64, or if Chrome didn't land: Chromium (deb, else snap)
+    _have_browser || $SUDO apt-get install -y chromium >/dev/null 2>&1 || $SUDO apt-get install -y chromium-browser >/dev/null 2>&1 \
+      || { command -v snap >/dev/null 2>&1 && $SUDO snap install chromium >/dev/null 2>&1; } || true
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y google-chrome-stable >/dev/null 2>&1 || $SUDO dnf install -y chromium >/dev/null 2>&1 || true
+  elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm chromium >/dev/null 2>&1 || true
+  fi
+  _have_browser && echo "  + browser installed" || echo "  ! could not install a browser — install Chrome/Chromium manually"
+}
 # Install, or (with UPGRADE_CLIS set) upgrade, an agent CLI. claude: native script /
 # self-update. codex: npm, else brew if present (we never auto-install brew).
 install_cli() {
@@ -153,6 +181,7 @@ if [ "$CLIS_ONLY" = 0 ]; then
   _missing=""; for _d in git jq tmux; do command -v "$_d" >/dev/null 2>&1 || _missing="$_missing $_d"; done
   [ -n "$_missing" ] && echo "  !! still missing:$_missing — run: sudo apt-get install -y$_missing"
   [ "$WANT_XVFB" = 1 ] && ensure_xvfb
+  [ "$WANT_CHROME" = 1 ] && ensure_chrome
 fi
 
 # 3. agent CLIs
@@ -170,4 +199,8 @@ echo
 echo "bootstrap done. next:"
 [ "$WANT_CLAUDE" = 1 ] && echo "  claude login                 # authenticate (device flow; or export ANTHROPIC_API_KEY)"
 [ "$WANT_CODEX" = 1 ]  && echo "  codex login                  # authenticate (or export OPENAI_API_KEY)"
+if [ "$WANT_CHROME" = 1 ]; then
+  echo "  --chrome: open the browser (needs a desktop), install the 'Claude in Chrome'"
+  echo "            extension from the Web Store, then run 'claude --chrome' once to connect."
+fi
 echo "  install fleet:  <fleet-repo>/install.sh   (or: fleet remote-install <host> from your laptop)"

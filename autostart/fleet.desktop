@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Fleet
+Comment=Start the agent fleet on graphical login, resuming prior sessions
+Exec=/srv/claude/bin/fleet.sh up
+X-GNOME-Autostart-enabled=true
+NoDisplay=true

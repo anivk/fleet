@@ -1,0 +1,47 @@
+name: Release
+
+# Tag a release: git tag v0.1.0 && git push origin v0.1.0
+# Publishes the single `fleet` binary per OS/arch; get.sh downloads the right one.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  # Linux binaries — systray uses pure-Go D-Bus here, so no cgo (cross-compiles cleanly).
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build fleet (linux/${{ matrix.arch }})
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build -trimpath -o "fleet-linux-${{ matrix.arch }}" .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: fleet-linux-${{ matrix.arch }}
+          fail_on_unmatched_files: true
+
+  # macOS binaries — systray needs cgo (Objective-C), built natively on the macOS runner.
+  macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build fleet (darwin/${{ matrix.arch }})
+        run: CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -o "fleet-darwin-${{ matrix.arch }}" .
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: fleet-darwin-${{ matrix.arch }}
+          fail_on_unmatched_files: true

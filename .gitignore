@@ -1,0 +1,8 @@
+*.bak
+*.bak-*
+.DS_Store
+.superpowers/
+tray/fleet-tray
+
+# single-binary build artifact
+/fleet

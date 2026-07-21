@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y tmux jq
+      - name: Syntax check
+        run: bash -n bin/fleet.sh install.sh bootstrap/bootstrap.sh get.sh shell/fleet.bashrc hooks/fleet-hook.sh
+      - name: Bash tests
+        run: |
+          for t in tests/test_*.sh; do
+            echo "== $t =="
+            bash "$t"
+          done
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet, test, build
+        run: |
+          go vet ./...
+          go test ./...
+          go build -o /dev/null .
+          test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }

@@ -9,8 +9,9 @@
 
 [![CI](https://github.com/anivk/fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/anivk/fleet/actions/workflows/ci.yml)
 
-Run a fleet of [Claude Code](https://claude.com/claude-code) agents in tmux — each in its own
-workspace, attachable locally over SSH — and optionally drivable from claude.ai/code.
+An orchestrator and operator for [Claude Code](https://claude.com/claude-code) and Codex
+agents — local and remote. Each agent runs in its own tmux workspace, attachable locally or
+over SSH, and optionally drivable from claude.ai/code.
 
 One tmux session, one pane per agent. Agents keep running when you detach; you can regroup them
 into tiled dashboards, zoom one full-screen, restart a single agent in place, and resume prior
@@ -45,15 +46,16 @@ fleet ships as a **single binary** (macOS + Linux, arm64 + amd64) — download i
 ```sh
 curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh   # -> /usr/local/bin/fleet
 
-fleet bootstrap     # provision this box: Tailscale + deps (git/jq/tmux) + claude   (servers)
-fleet install server  # wire config, tmux, hooks, autostart (or: fleet install client)
+fleet init server   # provision (Tailscale + deps + claude) AND wire config/tmux/hooks
+fleet init client   # laptop that only watches remotes — skips provisioning
 ```
 
 - **`get.sh`** grabs the right binary for your OS/arch from the latest GitHub release
   (override the dir with `FLEET_INSTALL_DIR`, the version with `FLEET_VERSION`).
-- **`fleet bootstrap`** is the box-provisioner — it installs everything an agent host
-  needs. On a laptop that only *watches* remotes (client mode) you can skip it.
-- **`fleet install`** wires the rest. Then `claude login` (once, interactive) and you're set.
+- **`fleet init`** does both steps in one: on a server it provisions the box (Tailscale +
+  deps + claude) then wires fleet; on a client it just wires fleet. Both halves are
+  idempotent — re-run any time, or `fleet init --reset` to wipe fleet's config and redo.
+- `fleet start` checks logins and prompts for `claude login` / `codex login` if needed.
 
 The binary embeds the whole runtime (launcher, tray, provisioner) and unpacks it to a
 cache dir on first run — there's nothing else to clone.
@@ -160,9 +162,9 @@ source of truth; `fleet setup`, `fleet hosts`, and the installer all read and wr
   `--dangerously-bypass-approvals-and-sandbox`, anything else to `--full-auto`). `send`/`log`/
   `attach`/`restart`/`respawn` and the tray all still work; status/summaries fall back to
   pane-scraping (Codex has no Claude hooks).
-- **Provisioning** (deps, CLIs, browser) is `fleet bootstrap`'s job, not the config's —
-  it installs Claude + Codex/Node + a browser by default (`--no-codex` / `--headless` to
-  skip). `fleet update` also upgrades the CLIs (`--no-clis` to skip).
+- **Provisioning** (deps, CLIs, browser) is the `fleet init` provision step's job, not the
+  config's — it installs Claude + Codex/Node + a browser by default (`fleet init --no-codex`
+  / `--headless` to skip). `fleet update` also upgrades the CLIs (`--no-clis` to skip).
 
 **Auth is separate and interactive** — the installer can't log you in headlessly. On a fresh
 machine, once the CLIs are installed, run `claude login` and `codex login` (each opens a browser
@@ -233,7 +235,7 @@ gnome-extensions enable ubuntu-appindicators@ubuntu.com
 
 Two mechanisms, depending on whether your agents need a browser:
 
-- **Login autostart** (default in server mode) — `fleet install` drops an XDG autostart
+- **Login autostart** (default in server mode) — the `fleet init` wire step drops an XDG autostart
   entry (Linux) / launchd agent (macOS) that runs `fleet up` on **graphical login**,
   resuming each agent's last conversation. This is the default because `--chrome`
   browser agents need the desktop environment (`DISPLAY`/`WAYLAND`) a login provides.
@@ -241,7 +243,7 @@ Two mechanisms, depending on whether your agents need a browser:
   service** and enables *linger*, so the fleet starts on **boot, before any login**.
   Add **`--xvfb`** to run a virtual X display so `--chrome` browser agents (Chrome +
   the Claude Code extension) work headless too — provision it first with
-  `fleet bootstrap --with-xvfb`.
+  `fleet init --with-xvfb`.
 
 ```sh
 fleet boot enable          # start on boot, before login (Linux/systemd)
@@ -309,10 +311,10 @@ fleet hosts                        # list them
 Aliases are optional: an entry with no `short:` is shown by its bare hostname.
 
 The recommended way to set up a new box is the binary flow — `curl … get.sh | sh`
-then `fleet bootstrap` + `fleet install` on the box (see [Setting up a new
+then `fleet init server` on the box (see [Setting up a new
 machine](#setting-up-a-new-machine)). `fleet remote-install` is the **source-based**
 alternative: it gets this repo onto the remote and runs `install.sh` (fleet wiring
-only — the box must already be provisioned via `bootstrap`, since Tailscale is a
+only — the box must already be provisioned, since Tailscale is a
 prerequisite for reaching it anyway):
 
 ```sh
@@ -358,16 +360,14 @@ curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up --ssh                 # or --authkey=tskey-… for no browser
 ```
 
-**Then, on the box:** install fleet and bring it up. `fleet bootstrap` needs `sudo`
+**Then, on the box:** install fleet and bring it up. `fleet init` needs `sudo`
 for packages, so run it there (interactively):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh   # the binary
-fleet bootstrap        # deps (git/jq/tmux) + claude   (tailscale already up)
-claude login           # once — device flow (or export ANTHROPIC_API_KEY)
-fleet install server   # wire config + hooks + autostart
+fleet init server      # provision (deps + claude, tailscale already up) + wire config/hooks/autostart
 fleet setup you/repo 4 # (optional) add repo agents; or `fleet config push` from your laptop
-fleet start            # launch the agents      (fleet boot enable → start on boot)
+fleet start            # launch the agents — prompts claude/codex login if needed
 ```
 
 **From your laptop — register + watch it:**
@@ -450,10 +450,10 @@ servers, an Ubuntu desktop + Mac VMs, etc.); other OSes aren't supported.
 
 **Per feature:**
 - **`--chrome` browser agents** — a **graphical desktop** (`--chrome` attaches to a real
-  Chrome, so it isn't reliable headless), a **browser** (`fleet bootstrap` installs
+  Chrome, so it isn't reliable headless), a **browser** (`fleet init` installs
   Chrome/Chromium **by default** — pass `--headless` to skip it on a true headless box),
   and the **"Claude in Chrome" extension**. The extension is normally a manual Web Store
-  install; `fleet bootstrap --auto-extension` force-installs it via Chrome's
+  install; `fleet init` force-installs it by default via Chrome's
   `ExtensionInstallForcelist` enterprise policy (undocumented for this extension, but a
   standard Chrome capability) — you may still need to approve the one-time connect prompt
 - **`fleet remote`** — [Tailscale](https://tailscale.com) with SSH on both ends
@@ -466,7 +466,7 @@ servers, an Ubuntu desktop + Mac VMs, etc.); other OSes aren't supported.
 ## Client vs server mode
 
 A machine installs in one of two modes — pass it (and an optional location tag) as
-arguments: **`fleet install [server|client] [location]`** (`FLEET_MODE` /
+arguments: **`fleet init [server|client] [location]`** (`FLEET_MODE` /
 `FLEET_LOCATION` env still work):
 
 - **`server`** (default) — a full node: runs its own local agents and installs a
@@ -477,8 +477,8 @@ arguments: **`fleet install [server|client] [location]`** (`FLEET_MODE` /
   all still work. Good for a laptop you only use to drive remote fleets.
 
 ```sh
-fleet install server               # a box that runs agents (default)
-fleet install client laptop        # attach-only laptop, tagged 'laptop'
+fleet init server                  # a box that runs agents (default)
+fleet init client laptop           # attach-only laptop, tagged 'laptop'
 ```
 
 The mode + location are stored in `fleet.json`; a re-run (or `fleet update`) preserves

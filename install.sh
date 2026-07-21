@@ -18,9 +18,9 @@ OS="$(uname -s)"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 export PATH
 
-# Positional args:  install.sh [server|client] [location]
-#   fleet install server            # a box that runs agents
-#   fleet install client laptop     # attach-only, tagged 'laptop'
+# Positional args:  install.sh [server|client] [location]  (run via `fleet init`)
+#   fleet init server            # a box that runs agents
+#   fleet init client laptop     # attach-only, tagged 'laptop'
 # (FLEET_MODE / FLEET_LOCATION env still work and take a back seat to these.)
 for _a in "$@"; do
   case "$_a" in

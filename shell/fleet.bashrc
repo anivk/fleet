@@ -27,8 +27,8 @@ if [ -n "${BASH_VERSION:-}" ]; then
       COMPREPLY=($(compgen -W "$full" -- "$cur"))
     elif [[ "${COMP_WORDS[1]}" =~ ^(remote|remote-ssh|update|remote-install|respawn)$ ]] && [ "$COMP_CWORD" -eq 2 ]; then
       COMPREPLY=($(compgen -W "$hosts" -- "$cur"))
-    elif [ "" = init ] && [ "" -eq 2 ]; then
-      COMPREPLY=($(compgen -W "server client" -- ""))
+    elif [ "${COMP_WORDS[1]}" = init ] && [ "$COMP_CWORD" -eq 2 ]; then
+      COMPREPLY=($(compgen -W "server client --reset" -- "$cur"))
     elif [ "${COMP_WORDS[1]}" = boot ] && [ "$COMP_CWORD" -eq 2 ]; then
       COMPREPLY=($(compgen -W "enable disable status" -- "$cur"))
     elif [ "${COMP_WORDS[1]}" = caffeinate ] && [ "$COMP_CWORD" -eq 2 ]; then

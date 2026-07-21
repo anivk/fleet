@@ -1013,14 +1013,40 @@ if command -v fleet >/dev/null 2>&1; then F=fleet; else F="$(cat ~/.config/fleet
 
 # fleet tray {start|stop|status|enable-autostart|disable-autostart}
 # The menubar monitor. Runs on client OR server. Autostart is OPT-IN.
-# fleet init [server|client] [location] — one command: provision (bootstrap, server
-# only) + wire fleet (install). Both steps are idempotent, so it's safe to re-run.
+# Clear fleet's own config + wiring (not the provisioned deps/CLIs) so init starts fresh.
+_reset_fleet() {
+  echo "── init --reset: clearing fleet config + wiring ──"
+  tmux kill-session -t "$SESSION" 2>/dev/null && echo "  killed the running session" || true
+  rm -f "$_cfgdir/fleet.json" "$_cfgdir/mode" "$_cfgdir/location" "$_cfgdir/tmux.conf" && echo "  removed config"
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+    [[ -f "$rc" ]] && grep -qE 'Claude Code agent fleet|FLEET_HOME|fleet\.bashrc' "$rc" 2>/dev/null || continue
+    grep -vE 'Claude Code agent fleet|FLEET_HOME|FLEET_LOCATION|fleet\.bashrc' "$rc" > "$rc.tmp" && mv "$rc.tmp" "$rc" && echo "  cleaned $(basename "$rc")"
+  done
+  [[ -f "$HOME/.tmux.conf" ]] && grep -qE 'source-file.*fleet' "$HOME/.tmux.conf" 2>/dev/null && {
+    grep -vE 'source-file.*fleet' "$HOME/.tmux.conf" > "$HOME/.tmux.conf.tmp" && mv "$HOME/.tmux.conf.tmp" "$HOME/.tmux.conf"; }
+  rm -f "$HOME/.config/autostart/fleet.desktop" "$HOME/.config/autostart/fleet-tray.desktop"
+  [[ "$(uname -s)" == Darwin ]] && rm -f "$HOME/Library/LaunchAgents/com.anivk.fleet.plist" "$HOME/Library/LaunchAgents/com.anivk.fleet-tray.plist"
+  local cfg="$HOME/.claude/settings.json"
+  [[ -f "$cfg" ]] && command -v jq >/dev/null 2>&1 && jq 'if .hooks then (.hooks |= (with_entries(.value |= map(select(.__fleet != true))) | with_entries(select((.value|length)>0)))) else . end' "$cfg" > "$cfg.tmp" 2>/dev/null && mv "$cfg.tmp" "$cfg" && echo "  cleared Claude hooks"
+  echo
+}
+
+# fleet init [server|client] [location] [--reset] — one command: provision (bootstrap,
+# server only) + wire fleet (install). Idempotent, so safe to re-run; --reset wipes the
+# existing fleet config + wiring first for a clean redo.
 cmd_init() {
-  local mode="${1:-server}"; [[ $# -gt 0 ]] && shift || true
-  case "$mode" in server|client) ;; *) die "usage: fleet init [server|client] [location] [bootstrap flags…]" ;; esac
-  # split remaining args: bare word = location (for install); --flags = bootstrap opts
-  local loc="" bflags=() a
-  for a in "$@"; do case "$a" in -*) bflags+=("$a") ;; *) loc="$a" ;; esac; done
+  local mode="" loc="" reset=0 bflags=() a
+  for a in "$@"; do
+    case "$a" in
+      server|client) mode="$a" ;;
+      --reset)       reset=1 ;;
+      -*)            bflags+=("$a") ;;
+      *)             loc="$a" ;;
+    esac
+  done
+  [[ -z "$mode" ]] && mode="$(jq -r '.mode // "server"' "$FLEET_JSON" 2>/dev/null || echo server)"
+  [[ "$reset" == 1 ]] && _reset_fleet
   if [[ "$mode" == server ]]; then   # a client needs no agent stack, so no bootstrap
     echo "── init: provisioning the machine (bootstrap) ──"
     "$FLEET_HOME/bootstrap/bootstrap.sh" "${bflags[@]}" || die "bootstrap failed"
@@ -1069,7 +1095,7 @@ cmd_boot() {
       # extension) works with nobody logged in. Regular Chrome under Xvfb — not
       # --headless — so the extension loads normally.
       if [[ "$xvfb" == 1 ]]; then
-        command -v Xvfb >/dev/null 2>&1 || echo "  ! Xvfb not installed — run: fleet bootstrap --with-xvfb"
+        command -v Xvfb >/dev/null 2>&1 || echo "  ! Xvfb not installed — run: fleet init --with-xvfb"
         cat > "$xunit" <<XU
 [Unit]
 Description=Xvfb virtual display for fleet browser agents
@@ -1389,7 +1415,7 @@ cmd_run() {
 # fleet help — the full command reference, grouped so it's actually readable.
 cmd_help() {
   cat <<'HELP'
-fleet — a tmux fleet of Claude Code (and Codex) agents, local and remote.
+fleet — an orchestrator and operator for Claude Code and Codex agents, local and remote.
 
 LAUNCH & LIFECYCLE
   fleet start [--fresh]              launch all agents (resumes convos; --fresh = cold)
@@ -1414,7 +1440,7 @@ WATCH
   fleet doctor                      health check: tools, config, auth, hosts
 
 CONFIG  (~/.config/fleet/fleet.json — schema in the README)
-  fleet init [server|client] [location]   one command: bootstrap (server) + install
+  fleet init [server|client] [location] [--reset]   provision (server) + wire fleet in one; --reset redoes clean
   fleet setup <owner>/<repo> [count]   clone repo agents + add them to the config
   fleet config {path|edit|validate|push [--restart] [host]}
   fleet hosts {ls|add <short> [host]|rm <short>|scan [--add]}
@@ -1448,9 +1474,7 @@ HELP
 
 case "${1:-start}" in
   setup)   shift; cmd_setup "$@" ;;      # clone the repo N times + save the roster
-  init)      shift; cmd_init "$@" ;;     # one-shot: bootstrap (server) + install
-  install)   shift; exec "$FLEET_HOME/install.sh" "$@" ;;              # wire fleet (shell/config/hooks)
-  bootstrap) shift; exec "$FLEET_HOME/bootstrap/bootstrap.sh" "$@" ;;  # provision the box (tailscale+deps+claude)
+  init)      shift; cmd_init "$@" ;;     # provision + wire fleet, in one (bootstrap then install)
   install-hooks) cmd_install_hooks ;;    # wire Claude hooks (server machines)
   hook)    shift; exec "$FLEET_HOME/hooks/fleet-hook.sh" "$@" ;;  # Claude hook event -> state file
   start)   shift; cmd_start "$@" ;;      # resume by default; --fresh for a cold start

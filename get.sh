@@ -72,5 +72,5 @@ echo "get: installed $dest/fleet"
 "$dest/fleet" --version 2>/dev/null || true
 echo
 echo "next:"
-echo "  fleet init server   # provision this box (deps + claude) AND wire config/hooks"
+echo "  fleet init server   # provision (Tailscale + deps + Claude/Codex) AND wire config/hooks"
 echo "  fleet init client   # laptop that only watches remotes (skips provisioning)"

@@ -180,7 +180,7 @@ echo "done ($MODE mode). open a new shell (or 'source $RC'), then:"
 if [ "$MODE" = server ]; then
   # claude is provisioned by bootstrap, not here — warn if the box wasn't bootstrapped.
   if ! command -v claude >/dev/null 2>&1; then
-    echo "  ! claude not found — agents can't run. Provision it: $REPO/bootstrap/bootstrap.sh"
+    echo "  ! claude not found — agents can't run. Provision it: fleet init server"
   fi
   # Auth is per-machine and interactive — not something the installer can do headlessly.
   command -v claude >/dev/null 2>&1 && echo "  claude login                         # authenticate Claude (or export ANTHROPIC_API_KEY)"

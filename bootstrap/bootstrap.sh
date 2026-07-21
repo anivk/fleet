@@ -144,8 +144,19 @@ ensure_rdp() {
     fi
   fi
   if command -v xrdp >/dev/null 2>&1; then
-    $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
     $SUDO adduser xrdp ssl-cert >/dev/null 2>&1 || true   # xrdp needs to read the TLS key
+    # A remote xrdp session isn't "console", so Xorg's default allowed_users=console
+    # kills its X server ("Xorg server closed connection"). Let any user start X.
+    if [ -f /etc/X11/Xwrapper.config ]; then
+      $SUDO sed -i 's/^allowed_users=.*/allowed_users=anybody/' /etc/X11/Xwrapper.config
+      grep -q '^needs_root_rights=' /etc/X11/Xwrapper.config \
+        && $SUDO sed -i 's/^needs_root_rights=.*/needs_root_rights=yes/' /etc/X11/Xwrapper.config \
+        || echo 'needs_root_rights=yes' | $SUDO tee -a /etc/X11/Xwrapper.config >/dev/null
+    else
+      printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | $SUDO tee /etc/X11/Xwrapper.config >/dev/null
+    fi
+    $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
+    $SUDO systemctl restart xrdp >/dev/null 2>&1 || true
     if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qiw active; then
       $SUDO ufw allow in on tailscale0 to any port 3389 proto tcp >/dev/null 2>&1 || $SUDO ufw allow 3389/tcp >/dev/null 2>&1 || true
     fi

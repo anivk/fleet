@@ -160,10 +160,9 @@ source of truth; `fleet setup`, `fleet hosts`, and the installer all read and wr
   `--dangerously-bypass-approvals-and-sandbox`, anything else to `--full-auto`). `send`/`log`/
   `attach`/`restart`/`respawn` and the tray all still work; status/summaries fall back to
   pane-scraping (Codex has no Claude hooks).
-- **`install`** provisions the box: `{ "deps": ["ripgrep"], "clis": ["claude", "codex"] }`. The
-  installer ensures the system `deps` (in addition to the always-installed git/jq/tmux) and the
-  agent `clis` (Claude via its official installer; Codex via npm — installing Node first if
-  needed — else brew). `fleet update` also upgrades these CLIs (`--no-clis` to skip).
+- **Provisioning** (deps, CLIs, browser) is `fleet bootstrap`'s job, not the config's —
+  it installs Claude + Codex/Node + a browser by default (`--no-codex` / `--headless` to
+  skip). `fleet update` also upgrades the CLIs (`--no-clis` to skip).
 
 **Auth is separate and interactive** — the installer can't log you in headlessly. On a fresh
 machine, once the CLIs are installed, run `claude login` and `codex login` (each opens a browser

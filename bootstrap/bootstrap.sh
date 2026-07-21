@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# bootstrap — provision a bare machine into a fleet-ready node: Tailscale (+ SSH),
-# the core deps (git, jq, tmux), and the Claude Code CLI (Node + Codex on request).
+# bootstrap — provision a bare machine into a fleet-ready node. Batteries included:
+# Tailscale (+ SSH), core deps (git, jq, tmux), the agent CLIs (Claude + Codex/Node),
+# and a browser for --chrome agents — all by default.
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--headless] [--auto-extension] [--no-claude]
-#     (installs a browser for --chrome by default; --headless skips it; --auto-extension
-#      force-installs the Claude-in-Chrome extension via enterprise policy)
+#   bootstrap.sh [--authkey=tskey-…] [--no-codex] [--headless] [--with-xvfb] [--auto-extension] [--no-claude]
+#     defaults install codex+node and a browser; --no-codex / --headless opt out.
+#     --with-xvfb adds a virtual display (headless --chrome); --auto-extension
+#     force-installs the Claude-in-Chrome extension via enterprise policy.
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -16,19 +18,21 @@ OS="$(uname -s)"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 export PATH
 
-# Chrome is installed by DEFAULT (most agents use --chrome); --headless skips it.
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=0; CLIS_ONLY=0
+# Batteries included: claude, codex (+ node), and a browser all install by DEFAULT.
+# --no-codex / --headless / --no-claude opt out.
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=1; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=0; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
-    --with-codex) WANT_CODEX=1 ;;
+    --no-codex)   WANT_CODEX=0 ;;             # skip codex + node
+    --with-codex) WANT_CODEX=1 ;;             # (default; kept for compat)
     --with-xvfb)  WANT_XVFB=1 ;;    # virtual display for --chrome agents (headless boot)
     --headless|--no-chrome) WANT_CHROME=0 ;;  # skip the browser (true headless server)
     --with-chrome) WANT_CHROME=1 ;;           # (default; kept for compat)
     --auto-extension) WANT_EXT=1 ;; # force-install the Claude-in-Chrome extension (enterprise policy)
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
-    -h|--help)    sed -n '2,11p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown arg: $a" >&2; exit 1 ;;
   esac
 done
@@ -153,7 +157,7 @@ install_cli() {
       echo "  upgrading ${c}…"
       case "$c" in
         claude) claude update >/dev/null 2>&1 || true ;;
-        codex)  { command -v npm >/dev/null 2>&1 && npm update -g @openai/codex >/dev/null 2>&1; } \
+        codex)  { command -v npm >/dev/null 2>&1 && $SUDO npm update -g @openai/codex >/dev/null 2>&1; } \
                   || { command -v brew >/dev/null 2>&1 && brew upgrade codex >/dev/null 2>&1; } || true ;;
       esac
       echo "  = $c $("$c" --version 2>/dev/null | head -1)"
@@ -170,7 +174,7 @@ install_cli() {
     codex)
       ensure_node
       echo "  installing Codex…"
-      { command -v npm >/dev/null 2>&1 && npm install -g @openai/codex >/dev/null 2>&1; } \
+      { command -v npm >/dev/null 2>&1 && $SUDO npm install -g @openai/codex >/dev/null 2>&1; } \
         || { command -v brew >/dev/null 2>&1 && brew install codex >/dev/null 2>&1; } || true ;;
     *) echo "  ? unknown cli: $c"; return 0 ;;
   esac

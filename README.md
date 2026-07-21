@@ -238,14 +238,20 @@ Two mechanisms, depending on whether your agents need a browser:
   browser agents need the desktop environment (`DISPLAY`/`WAYLAND`) a login provides.
 - **Boot service** (headless servers) — `fleet boot enable` installs a **systemd user
   service** and enables *linger*, so the fleet starts on **boot, before any login**.
-  Ideal for a headless box; `--chrome` agents won't work without a display, so use it
-  for non-browser agents (or set up a virtual display).
+  Add **`--xvfb`** to run a virtual X display so `--chrome` browser agents (Chrome +
+  the Claude Code extension) work headless too — provision it first with
+  `fleet bootstrap --with-xvfb`.
 
 ```sh
-fleet boot enable      # start on boot, before login (Linux/systemd)
-fleet boot status      # enabled? lingering? active?
-fleet boot disable     # remove the boot service
+fleet boot enable          # start on boot, before login (Linux/systemd)
+fleet boot enable --xvfb   # + a virtual display so --chrome agents run headless
+fleet boot status          # enabled? lingering? active?
+fleet boot disable         # remove the boot service
 ```
+
+Under `--xvfb`, fleet runs `Xvfb :99` and sets `DISPLAY=:99` in the service, so a real
+Chrome (with your extension profile) renders offscreen — not `--headless`, which
+doesn't load extensions cleanly.
 
 ## Multi-user / shared setup
 

@@ -993,23 +993,49 @@ if command -v fleet >/dev/null 2>&1; then F=fleet; else F="$(cat ~/.config/fleet
 # server comes up with its fleet already running. Note: --chrome browser agents
 # need a graphical session, so this suits non-chrome agents (or a virtual display).
 cmd_boot() {
-  local sub=${1:-status} user; user="$(id -un)"
+  local sub=${1:-status} user xvfb=0 a; user="$(id -un)"
+  for a in "$@"; do [[ "$a" == --xvfb ]] && xvfb=1; done
   [[ "$(uname -s)" == Linux ]] || die "fleet boot is Linux/systemd only (macOS starts agents via the login autostart)"
   command -v systemctl >/dev/null 2>&1 || die "systemd not found (systemctl) — can't install a boot service"
-  local unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/fleet.service"
+  local udir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  local unit="$udir/fleet.service" xunit="$udir/fleet-xvfb.service"
   local fbin="${FLEET_BIN:-}"; [[ -z "$fbin" || "$fbin" == *.sh ]] && fbin="$(command -v fleet 2>/dev/null || echo "$FLEET_HOME/bin/fleet.sh")"
   case "$sub" in
     enable|on)
-      mkdir -p "$(dirname "$unit")"
+      mkdir -p "$udir"
+      local xdeps="" xenv=""
+      # --xvfb: run a virtual X display so --chrome (Chrome + the Claude Code
+      # extension) works with nobody logged in. Regular Chrome under Xvfb — not
+      # --headless — so the extension loads normally.
+      if [[ "$xvfb" == 1 ]]; then
+        command -v Xvfb >/dev/null 2>&1 || echo "  ! Xvfb not installed — run: fleet bootstrap --with-xvfb"
+        cat > "$xunit" <<XU
+[Unit]
+Description=Xvfb virtual display for fleet browser agents
+
+[Service]
+ExecStart=$(command -v Xvfb 2>/dev/null || echo /usr/bin/Xvfb) :99 -screen 0 1920x1080x24 -nolisten tcp
+Restart=always
+
+[Install]
+WantedBy=default.target
+XU
+        xdeps=$'Requires=fleet-xvfb.service\nAfter=fleet-xvfb.service'
+        xenv='Environment=DISPLAY=:99'
+      else
+        rm -f "$xunit"
+      fi
       cat > "$unit" <<UNIT
 [Unit]
 Description=fleet — Claude Code agent fleet
 After=network-online.target
 Wants=network-online.target
+$xdeps
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+$xenv
 ExecStart=$fbin up
 ExecStop=$fbin stop
 
@@ -1017,6 +1043,7 @@ ExecStop=$fbin stop
 WantedBy=default.target
 UNIT
       systemctl --user daemon-reload
+      [[ "$xvfb" == 1 ]] && { systemctl --user enable fleet-xvfb.service >/dev/null 2>&1 && echo "  + fleet-xvfb.service enabled (DISPLAY=:99)"; }
       systemctl --user enable fleet.service >/dev/null 2>&1 && echo "  + fleet.service enabled (user)"
       # linger makes the user's systemd manager (and thus fleet.service) start at
       # boot without a login. Needs root.
@@ -1027,13 +1054,15 @@ UNIT
         sudo loginctl enable-linger "$user" >/dev/null 2>&1 && echo "  + linger on" \
           || echo "  ! could not enable linger — run: sudo loginctl enable-linger $user"
       fi
+      [[ "$xvfb" == 1 ]] && systemctl --user start fleet-xvfb.service >/dev/null 2>&1 || true
       systemctl --user start fleet.service >/dev/null 2>&1 || true
       echo "boot: fleet starts on boot (before login)."
-      echo "note: --chrome browser agents need a graphical session; this suits non-chrome agents."
+      if [[ "$xvfb" == 1 ]]; then echo "  --chrome agents run under the Xvfb virtual display (:99)."
+      else echo "  note: --chrome agents need a display — re-run with --xvfb for a headless virtual one."; fi
       ;;
     disable|off)
-      systemctl --user disable --now fleet.service >/dev/null 2>&1 || true
-      rm -f "$unit"; systemctl --user daemon-reload >/dev/null 2>&1 || true
+      systemctl --user disable --now fleet.service fleet-xvfb.service >/dev/null 2>&1 || true
+      rm -f "$unit" "$xunit"; systemctl --user daemon-reload >/dev/null 2>&1 || true
       echo "boot: disabled (fleet.service removed)."
       echo "  (to also stop the user manager at boot: sudo loginctl disable-linger $user)"
       ;;
@@ -1043,7 +1072,7 @@ UNIT
         echo "boot: enabled (linger=${linger:-?}) — $(systemctl --user is-active fleet.service 2>/dev/null)"
       else echo "boot: not enabled (enable with: fleet boot enable)"; fi
       ;;
-    *) die "usage: fleet boot {enable|disable|status}" ;;
+    *) die "usage: fleet boot {enable [--xvfb]|disable|status}" ;;
   esac
 }
 
@@ -1263,7 +1292,7 @@ LAUNCH & LIFECYCLE
   fleet stop                        kill the session (the only thing that stops agents)
   fleet restart [--restart-fresh] <agent>   restart one agent in place (resumes)
   fleet respawn [host]              revive dead agents + start any missing (local or a host)
-  fleet boot {enable|disable}       start the fleet on boot, before login (Linux/systemd)
+  fleet boot {enable [--xvfb]|disable}   start on boot before login (Linux); --xvfb runs --chrome agents headless
 
 DRIVE AGENTS  (no need to attach)
   fleet send <agent> <text>         type text into an agent, then Enter

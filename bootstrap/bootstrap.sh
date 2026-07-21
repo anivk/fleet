@@ -4,7 +4,7 @@
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--no-claude]
+#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--no-claude]
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -14,11 +14,12 @@ OS="$(uname -s)"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 export PATH
 
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; CLIS_ONLY=0
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
     --with-codex) WANT_CODEX=1 ;;
+    --with-xvfb)  WANT_XVFB=1 ;;    # virtual display so --chrome agents run headless
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
     -h|--help)    sed -n '2,9p' "$0"; exit 0 ;;
@@ -70,6 +71,22 @@ ensure_node() {
   elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm nodejs npm >/dev/null 2>&1 || true
   fi
   command -v npm >/dev/null 2>&1 && echo "  + node installed" || echo "  ! could not install node — install node/npm for codex"
+}
+# Xvfb — a virtual X display so --chrome browser agents (Chrome + the Claude Code
+# extension) run with nobody logged in (headless server + `fleet boot --xvfb`).
+# Binary is `Xvfb`; package name varies by distro.
+ensure_xvfb() {
+  command -v Xvfb >/dev/null 2>&1 && { echo "  = Xvfb present"; return 0; }
+  echo "  installing xvfb (virtual display for browser agents)…"
+  if command -v apt-get >/dev/null 2>&1; then
+    [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
+    $SUDO apt-get install -y xvfb >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y xorg-x11-server-Xvfb >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then $SUDO yum install -y xorg-x11-server-Xvfb >/dev/null 2>&1 || true
+  elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xorg-server-xvfb >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then $SUDO apk add xvfb >/dev/null 2>&1 || true
+  fi
+  command -v Xvfb >/dev/null 2>&1 && echo "  + xvfb installed" || echo "  ! could not install xvfb — install your distro's Xvfb package"
 }
 # Install, or (with UPGRADE_CLIS set) upgrade, an agent CLI. claude: native script /
 # self-update. codex: npm, else brew if present (we never auto-install brew).
@@ -135,6 +152,7 @@ if [ "$CLIS_ONLY" = 0 ]; then
   for _d in git jq tmux; do ensure_dep "$_d"; done
   _missing=""; for _d in git jq tmux; do command -v "$_d" >/dev/null 2>&1 || _missing="$_missing $_d"; done
   [ -n "$_missing" ] && echo "  !! still missing:$_missing — run: sudo apt-get install -y$_missing"
+  [ "$WANT_XVFB" = 1 ] && ensure_xvfb
 fi
 
 # 3. agent CLIs

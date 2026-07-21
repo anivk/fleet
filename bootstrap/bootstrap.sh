@@ -4,8 +4,9 @@
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--headless] [--no-claude]
-#     (installs a browser for --chrome agents by default; --headless skips it)
+#   bootstrap.sh [--authkey=tskey-…] [--with-codex] [--with-xvfb] [--headless] [--auto-extension] [--no-claude]
+#     (installs a browser for --chrome by default; --headless skips it; --auto-extension
+#      force-installs the Claude-in-Chrome extension via enterprise policy)
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -16,7 +17,7 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;;
 export PATH
 
 # Chrome is installed by DEFAULT (most agents use --chrome); --headless skips it.
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; WANT_CHROME=1; CLIS_ONLY=0
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=0; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=0; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
@@ -24,9 +25,10 @@ for a in "$@"; do
     --with-xvfb)  WANT_XVFB=1 ;;    # virtual display for --chrome agents (headless boot)
     --headless|--no-chrome) WANT_CHROME=0 ;;  # skip the browser (true headless server)
     --with-chrome) WANT_CHROME=1 ;;           # (default; kept for compat)
+    --auto-extension) WANT_EXT=1 ;; # force-install the Claude-in-Chrome extension (enterprise policy)
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
-    -h|--help)    sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,11p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown arg: $a" >&2; exit 1 ;;
   esac
 done
@@ -119,6 +121,29 @@ ensure_chrome() {
   fi
   _have_browser && echo "  + browser installed" || echo "  ! could not install a browser — install Chrome/Chromium manually"
 }
+# Force-install the "Claude in Chrome" extension via Chrome's ExtensionInstallForcelist
+# enterprise policy — Chrome auto-installs it on launch, no Web Store click. Undocumented
+# for this extension (a generic Chrome capability); the one-time connect may still need a
+# click. Linux only; needs sudo (writes /etc policy).
+_EXT_ID="fcoeoabgfenejglbffodgkkbkcdhcgfn"
+ensure_extension_policy() {
+  if [ "$OS" != Linux ]; then echo "  · auto-extension: Linux only — install the extension manually in the browser"; return 0; fi
+  local body wrote=0 d
+  body="{ \"ExtensionInstallForcelist\": [\"${_EXT_ID};https://clients2.google.com/service/update2/crx\"] }"
+  # write the policy for whichever browser(s) are present
+  command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1 \
+    && { d=/etc/opt/chrome/policies/managed; $SUDO mkdir -p "$d" 2>/dev/null && printf '%s\n' "$body" | $SUDO tee "$d/claude-fleet.json" >/dev/null 2>&1 && wrote=1; }
+  if command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1; then
+    for d in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
+      $SUDO mkdir -p "$d" 2>/dev/null && printf '%s\n' "$body" | $SUDO tee "$d/claude-fleet.json" >/dev/null 2>&1 && wrote=1
+    done
+  fi
+  if [ "$wrote" = 1 ]; then
+    echo "  + Claude-in-Chrome extension policy installed (force-installs on next Chrome launch)"
+  else
+    echo "  ! couldn't write the extension policy (needs sudo, or no browser found) — install it from the Web Store"
+  fi
+}
 # Install, or (with UPGRADE_CLIS set) upgrade, an agent CLI. claude: native script /
 # self-update. codex: npm, else brew if present (we never auto-install brew).
 install_cli() {
@@ -185,6 +210,7 @@ if [ "$CLIS_ONLY" = 0 ]; then
   [ -n "$_missing" ] && echo "  !! still missing:$_missing — run: sudo apt-get install -y$_missing"
   [ "$WANT_XVFB" = 1 ] && ensure_xvfb
   [ "$WANT_CHROME" = 1 ] && ensure_chrome
+  [ "$WANT_EXT" = 1 ] && ensure_extension_policy
 fi
 
 # 3. agent CLIs
@@ -202,7 +228,10 @@ echo
 echo "bootstrap done. next:"
 [ "$WANT_CLAUDE" = 1 ] && echo "  claude login                 # authenticate (device flow; or export ANTHROPIC_API_KEY)"
 [ "$WANT_CODEX" = 1 ]  && echo "  codex login                  # authenticate (or export OPENAI_API_KEY)"
-if [ "$WANT_CHROME" = 1 ]; then
+if [ "$WANT_CHROME" = 1 ] && [ "$WANT_EXT" = 1 ]; then
+  echo "  --chrome: extension force-installs on next Chrome launch (desktop). Then run"
+  echo "            'claude --chrome' once — approve the connect prompt if it appears."
+elif [ "$WANT_CHROME" = 1 ]; then
   echo "  --chrome: open the browser (needs a desktop), install the 'Claude in Chrome'"
   echo "            extension from the Web Store, then run 'claude --chrome' once to connect."
 fi

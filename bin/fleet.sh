@@ -685,6 +685,14 @@ cmd_remote_ls() {
       fi
     fi
     printf '%-10s %-26s %s\n' "$short" "$hn" "$state"
+    # List that host's agents too (ssh + its `fleet status --json`). Bounded by a short
+    # ConnectTimeout + BatchMode so an unreachable host never hangs the overview; only for
+    # configured hosts that tailscale says are online. Skip with FLEET_NO_REMOTE_AGENTS=1.
+    if [[ "$state" == online && "${FLEET_NO_REMOTE_AGENTS:-0}" != 1 ]] && command -v ssh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+      ssh -o ConnectTimeout=4 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        "$FLEET_SSH_USER@$hn" 'fleet status --json' 2>/dev/null \
+        | jq -r '.sessions[]? | "    · \(.short)  \(.status)\(if .alive then "" else "/dead" end)  \((.summary // "") | .[0:56])"' 2>/dev/null
+    fi
   done
   # Auto-discovery: surface YOUR OWN online tailnet machines (same Tailscale user) that
   # aren't configured yet, so a new fleet box shows up without `fleet hosts add` — without

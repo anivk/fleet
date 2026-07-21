@@ -130,19 +130,48 @@ ensure_aws() {
   command -v aws >/dev/null 2>&1 && echo "  + aws installed" \
     || echo "  ! could not install aws — see https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
 }
-# az — Microsoft's own apt/dnf repo installer (their documented path).
+# Microsoft's azure-cli apt repo is keyed by distro codename and lags new releases
+# (Ubuntu 26.04 'resolute' isn't published yet). Use the live codename if the repo has
+# it, else pin to the newest LTS it does carry — the deb bundles its own Python in
+# /opt/az and depends only on base libs (libc6, libssl3t64, …), so a noble build runs
+# fine on a newer box. Echoes the chosen suite.
+_az_apt_dist() {
+  local live="$1" d
+  for d in "$live" noble jammy focal; do
+    [ -n "$d" ] || continue
+    curl -fsSL -o /dev/null "https://packages.microsoft.com/repos/azure-cli/dists/$d/Release" 2>/dev/null \
+      && { printf '%s' "$d"; return 0; }
+  done
+  printf 'noble'
+}
+# az — Microsoft's apt repo, codename-pinned (see _az_apt_dist) so it installs on
+# newer-than-supported Ubuntu too; dnf/pacman/brew elsewhere.
 ensure_az() {
   command -v az >/dev/null 2>&1 && { echo "  = az present"; return 0; }
   echo "  installing azure cli…"
   if command -v brew >/dev/null 2>&1; then brew install azure-cli >/dev/null 2>&1 || true
   elif ! _can_sudo; then
-    # Unlike kubectl/aws there's no supported user-local install — say so instead of
-    # reporting a generic failure the operator can't act on.
-    echo "  ! az needs root and this run has no sudo. On the box, run:"
-    echo "      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
+    # az has no supported user-local install (unlike kubectl/aws) — it needs root.
+    echo "  ! az needs root — re-run 'fleet init' interactively (it prompts for sudo),"
+    echo "    or by hand: https://learn.microsoft.com/cli/azure/install-azure-cli-linux"
     return 0
   elif command -v apt-get >/dev/null 2>&1; then
-    curl -fsSL https://aka.ms/InstallAzureCLIDeb 2>/dev/null | $SUDO bash >/dev/null 2>&1 || true
+    local live dist arch
+    live="$( . /etc/os-release 2>/dev/null; printf '%s' "${VERSION_CODENAME:-}" )"
+    command -v lsb_release >/dev/null 2>&1 && live="$(lsb_release -cs 2>/dev/null || printf '%s' "$live")"
+    dist="$(_az_apt_dist "$live")"
+    arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+    [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
+    $SUDO apt-get install -y ca-certificates curl apt-transport-https gnupg >/dev/null 2>&1 || true
+    $SUDO install -m 0755 -d /etc/apt/keyrings >/dev/null 2>&1 || true
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc 2>/dev/null \
+      | gpg --dearmor 2>/dev/null | $SUDO tee /etc/apt/keyrings/microsoft.gpg >/dev/null 2>&1 || true
+    $SUDO chmod go+r /etc/apt/keyrings/microsoft.gpg 2>/dev/null || true
+    printf 'Types: deb\nURIs: https://packages.microsoft.com/repos/azure-cli/\nSuites: %s\nComponents: main\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/microsoft.gpg\n' \
+      "$dist" "$arch" | $SUDO tee /etc/apt/sources.list.d/azure-cli.sources >/dev/null 2>&1 || true
+    $SUDO apt-get update >/dev/null 2>&1 || true
+    $SUDO apt-get install -y azure-cli >/dev/null 2>&1 || true
+    [ -n "$live" ] && [ "$dist" != "$live" ] && echo "  · pinned Microsoft's repo to '$dist' ($live isn't published yet)"
   elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y azure-cli >/dev/null 2>&1 || true
   elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm azure-cli >/dev/null 2>&1 || true
   fi

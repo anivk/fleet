@@ -73,6 +73,11 @@ ensure_dep() {
   else echo "  ! could not install $1 — needs passwordless sudo, or run: <pkg-mgr> install $1"; fi
 }
 # --- config-driven extras (fleet.json → install.deps) -----------------------------
+# Can we actually escalate? A box without passwordless sudo, provisioned over SSH with
+# no TTY, gets SUDO="sudo -n" — which fails on every install and would otherwise report
+# a bare "could not install". Detect it once so the installers that CAN land in a
+# user-local prefix (~/.local/bin is already on PATH, see the top of this file) do.
+_can_sudo() { [ -z "$SUDO" ] && return 0; $SUDO true >/dev/null 2>&1; }
 # Route a tool name to the right installer. The cloud CLIs each need a vendor path
 # (none ships as a plain apt/dnf package), everything else is just a package name.
 ensure_tool() {
@@ -92,9 +97,11 @@ ensure_kubectl() {
     local a v
     case "$(uname -m)" in x86_64|amd64) a=amd64 ;; arm64|aarch64) a=arm64 ;; *) a="" ;; esac
     v="$(curl -fsSL https://dl.k8s.io/release/stable.txt 2>/dev/null || true)"
-    if [ -n "$a" ] && [ -n "$v" ]; then
-      curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/$v/bin/linux/$a/kubectl" 2>/dev/null \
-        && $SUDO install -m 0755 /tmp/kubectl /usr/local/bin/kubectl >/dev/null 2>&1 || true
+    if [ -n "$a" ] && [ -n "$v" ] \
+       && curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/$v/bin/linux/$a/kubectl" 2>/dev/null; then
+      if _can_sudo; then $SUDO install -m 0755 /tmp/kubectl /usr/local/bin/kubectl >/dev/null 2>&1 || true
+      else mkdir -p "$HOME/.local/bin"
+           install -m 0755 /tmp/kubectl "$HOME/.local/bin/kubectl" >/dev/null 2>&1 || true; fi
       rm -f /tmp/kubectl
     fi
   fi
@@ -111,9 +118,12 @@ ensure_aws() {
     case "$(uname -m)" in x86_64|amd64) m=x86_64 ;; arm64|aarch64) m=aarch64 ;; *) m="" ;; esac
     command -v unzip >/dev/null 2>&1 || ensure_dep unzip
     if [ -n "$m" ] && command -v unzip >/dev/null 2>&1; then
-      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$m.zip" -o /tmp/awscliv2.zip 2>/dev/null \
-        && unzip -q -o /tmp/awscliv2.zip -d /tmp >/dev/null 2>&1 \
-        && $SUDO /tmp/aws/install --update >/dev/null 2>&1 || true
+      if curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$m.zip" -o /tmp/awscliv2.zip 2>/dev/null \
+         && unzip -q -o /tmp/awscliv2.zip -d /tmp >/dev/null 2>&1; then
+        # v2's installer takes an explicit prefix, so a no-root box still gets a real aws.
+        if _can_sudo; then $SUDO /tmp/aws/install --update >/dev/null 2>&1 || true
+        else /tmp/aws/install --update -i "$HOME/.local/aws-cli" -b "$HOME/.local/bin" >/dev/null 2>&1 || true; fi
+      fi
       rm -rf /tmp/awscliv2.zip /tmp/aws
     fi
   fi
@@ -125,6 +135,12 @@ ensure_az() {
   command -v az >/dev/null 2>&1 && { echo "  = az present"; return 0; }
   echo "  installing azure cli…"
   if command -v brew >/dev/null 2>&1; then brew install azure-cli >/dev/null 2>&1 || true
+  elif ! _can_sudo; then
+    # Unlike kubectl/aws there's no supported user-local install — say so instead of
+    # reporting a generic failure the operator can't act on.
+    echo "  ! az needs root and this run has no sudo. On the box, run:"
+    echo "      curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
+    return 0
   elif command -v apt-get >/dev/null 2>&1; then
     curl -fsSL https://aka.ms/InstallAzureCLIDeb 2>/dev/null | $SUDO bash >/dev/null 2>&1 || true
   elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y azure-cli >/dev/null 2>&1 || true

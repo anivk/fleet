@@ -5,10 +5,10 @@
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--no-codex] [--headless] [--no-extension] [--with-xvfb] [--no-claude]
+#   bootstrap.sh [--authkey=tskey-…] [--no-codex] [--headless] [--no-extension] [--with-xvfb] [--with-rdp] [--no-claude]
 #     defaults install codex+node, a browser, AND force-install the Claude-in-Chrome
-#     extension (enterprise policy). --no-codex / --headless / --no-extension opt out;
-#     --with-xvfb adds a virtual display for headless --chrome.
+#     extension. --no-codex / --headless / --no-extension opt out; --with-xvfb adds a
+#     virtual display for headless --chrome; --with-rdp installs xrdp remote desktop.
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -20,13 +20,14 @@ export PATH
 
 # Batteries included: claude, codex (+ node), and a browser all install by DEFAULT.
 # --no-codex / --headless / --no-claude opt out.
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=1; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=1; CLIS_ONLY=0
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=1; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=1; WANT_RDP=0; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
     --no-codex)   WANT_CODEX=0 ;;             # skip codex + node
     --with-codex) WANT_CODEX=1 ;;             # (default; kept for compat)
     --with-xvfb)  WANT_XVFB=1 ;;    # virtual display for --chrome agents (headless boot)
+    --with-rdp)   WANT_RDP=1 ;;     # xrdp remote desktop (reach it over Tailscale)
     --headless|--no-chrome) WANT_CHROME=0 ;;  # skip the browser (true headless server)
     --with-chrome) WANT_CHROME=1 ;;           # (default; kept for compat)
     --no-extension) WANT_EXT=0 ;;             # skip the Claude-in-Chrome extension policy
@@ -126,6 +127,30 @@ ensure_chrome() {
   elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm chromium >/dev/null 2>&1 || true
   fi
   _have_browser && echo "  + browser installed" || echo "  ! could not install a browser — install Chrome/Chromium manually"
+}
+# xrdp — a remote desktop reachable over Tailscale (RDP on :3389). Handy for logging
+# into the box's GUI to install the Claude-in-Chrome extension. Over Tailscale there's
+# no public port to open; if ufw is active we allow 3389 on the tailnet only.
+ensure_rdp() {
+  [ "$OS" = Linux ] || { echo "  · --with-rdp: Linux only"; return 0; }
+  if command -v xrdp >/dev/null 2>&1; then echo "  = xrdp present"; else
+    echo "  installing xrdp (remote desktop on :3389)…"
+    if command -v apt-get >/dev/null 2>&1; then
+      [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
+      $SUDO apt-get install -y xrdp >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y xrdp >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then $SUDO yum install -y xrdp >/dev/null 2>&1 || true
+    elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xrdp >/dev/null 2>&1 || true
+    fi
+  fi
+  if command -v xrdp >/dev/null 2>&1; then
+    $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
+    $SUDO adduser xrdp ssl-cert >/dev/null 2>&1 || true   # xrdp needs to read the TLS key
+    if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qiw active; then
+      $SUDO ufw allow in on tailscale0 to any port 3389 proto tcp >/dev/null 2>&1 || $SUDO ufw allow 3389/tcp >/dev/null 2>&1 || true
+    fi
+    echo "  + xrdp on :3389 — RDP to this box's Tailscale name/IP from your Windows app (no port forwarding)"
+  else echo "  ! could not install xrdp — install your distro's xrdp package"; fi
 }
 # Force-install the "Claude in Chrome" extension via Chrome's ExtensionInstallForcelist
 # enterprise policy — Chrome auto-installs it on launch, no Web Store click. Undocumented
@@ -242,6 +267,7 @@ if [ "$CLIS_ONLY" = 0 ]; then
   _missing=""; for _d in git jq tmux; do command -v "$_d" >/dev/null 2>&1 || _missing="$_missing $_d"; done
   [ -n "$_missing" ] && echo "  !! still missing:$_missing — run: sudo apt-get install -y$_missing"
   [ "$WANT_XVFB" = 1 ] && ensure_xvfb
+  [ "$WANT_RDP" = 1 ] && ensure_rdp
   [ "$WANT_CHROME" = 1 ] && ensure_chrome
   [ "$WANT_EXT" = 1 ] && ensure_extension_policy
 fi

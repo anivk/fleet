@@ -21,12 +21,14 @@ if [ -n "${BASH_VERSION:-}" ]; then
       names="agent-A agent-B agent-C agent-D"
     fi
     if [ "$COMP_CWORD" -eq 1 ]; then
-      COMPREPLY=($(compgen -W "setup start attach send broadcast log run doctor respawn boot caffeinate decaffeinate remote remote-ssh keys remote-install tray hosts config update grid spread status ls stop restart help" -- "$cur"))
+      COMPREPLY=($(compgen -W "init setup start attach send broadcast log run doctor respawn boot caffeinate decaffeinate remote remote-ssh keys remote-install tray hosts config update grid spread status ls stop restart help" -- "$cur"))
     elif [[ "${COMP_WORDS[1]}" =~ ^(restart|attach|send|log|key)$ ]] && [ "$COMP_CWORD" -eq 2 ]; then
       local full=""; for n in $names; do full+="$pfx-$n $n "; done
       COMPREPLY=($(compgen -W "$full" -- "$cur"))
     elif [[ "${COMP_WORDS[1]}" =~ ^(remote|remote-ssh|update|remote-install|respawn)$ ]] && [ "$COMP_CWORD" -eq 2 ]; then
       COMPREPLY=($(compgen -W "$hosts" -- "$cur"))
+    elif [ "" = init ] && [ "" -eq 2 ]; then
+      COMPREPLY=($(compgen -W "server client" -- ""))
     elif [ "${COMP_WORDS[1]}" = boot ] && [ "$COMP_CWORD" -eq 2 ]; then
       COMPREPLY=($(compgen -W "enable disable status" -- "$cur"))
     elif [ "${COMP_WORDS[1]}" = caffeinate ] && [ "$COMP_CWORD" -eq 2 ]; then

@@ -1013,6 +1013,23 @@ if command -v fleet >/dev/null 2>&1; then F=fleet; else F="$(cat ~/.config/fleet
 
 # fleet tray {start|stop|status|enable-autostart|disable-autostart}
 # The menubar monitor. Runs on client OR server. Autostart is OPT-IN.
+# fleet init [server|client] [location] — one command: provision (bootstrap, server
+# only) + wire fleet (install). Both steps are idempotent, so it's safe to re-run.
+cmd_init() {
+  local mode="${1:-server}"; [[ $# -gt 0 ]] && shift || true
+  case "$mode" in server|client) ;; *) die "usage: fleet init [server|client] [location] [bootstrap flags…]" ;; esac
+  # split remaining args: bare word = location (for install); --flags = bootstrap opts
+  local loc="" bflags=() a
+  for a in "$@"; do case "$a" in -*) bflags+=("$a") ;; *) loc="$a" ;; esac; done
+  if [[ "$mode" == server ]]; then   # a client needs no agent stack, so no bootstrap
+    echo "── init: provisioning the machine (bootstrap) ──"
+    "$FLEET_HOME/bootstrap/bootstrap.sh" "${bflags[@]}" || die "bootstrap failed"
+    echo
+  fi
+  echo "── init: wiring fleet (install $mode) ──"
+  exec "$FLEET_HOME/install.sh" "$mode" ${loc:+"$loc"}
+}
+
 # Ensure the agent CLIs the roster needs are logged in — called by `fleet start`.
 # Prompts interactively (device flow) when there's a TTY; otherwise just warns so an
 # autostart/boot never blocks on login. codex is only checked if an agent uses it.
@@ -1397,6 +1414,7 @@ WATCH
   fleet doctor                      health check: tools, config, auth, hosts
 
 CONFIG  (~/.config/fleet/fleet.json — schema in the README)
+  fleet init [server|client] [location]   one command: bootstrap (server) + install
   fleet setup <owner>/<repo> [count]   clone repo agents + add them to the config
   fleet config {path|edit|validate|push [--restart] [host]}
   fleet hosts {ls|add <short> [host]|rm <short>|scan [--add]}
@@ -1430,6 +1448,7 @@ HELP
 
 case "${1:-start}" in
   setup)   shift; cmd_setup "$@" ;;      # clone the repo N times + save the roster
+  init)      shift; cmd_init "$@" ;;     # one-shot: bootstrap (server) + install
   install)   shift; exec "$FLEET_HOME/install.sh" "$@" ;;              # wire fleet (shell/config/hooks)
   bootstrap) shift; exec "$FLEET_HOME/bootstrap/bootstrap.sh" "$@" ;;  # provision the box (tailscale+deps+claude)
   install-hooks) cmd_install_hooks ;;    # wire Claude hooks (server machines)

@@ -5,10 +5,10 @@
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
-#   bootstrap.sh [--authkey=tskey-…] [--no-codex] [--headless] [--with-xvfb] [--auto-extension] [--no-claude]
-#     defaults install codex+node and a browser; --no-codex / --headless opt out.
-#     --with-xvfb adds a virtual display (headless --chrome); --auto-extension
-#     force-installs the Claude-in-Chrome extension via enterprise policy.
+#   bootstrap.sh [--authkey=tskey-…] [--no-codex] [--headless] [--no-extension] [--with-xvfb] [--no-claude]
+#     defaults install codex+node, a browser, AND force-install the Claude-in-Chrome
+#     extension (enterprise policy). --no-codex / --headless / --no-extension opt out;
+#     --with-xvfb adds a virtual display for headless --chrome.
 #   TS_AUTHKEY=tskey-… bootstrap.sh            # non-interactive Tailscale auth
 #   UPGRADE_CLIS=1 bootstrap.sh --clis-only    # just (re)install/upgrade the CLIs
 set -euo pipefail
@@ -20,7 +20,7 @@ export PATH
 
 # Batteries included: claude, codex (+ node), and a browser all install by DEFAULT.
 # --no-codex / --headless / --no-claude opt out.
-AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=1; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=0; CLIS_ONLY=0
+AUTHKEY="${TS_AUTHKEY:-}"; WANT_CLAUDE=1; WANT_CODEX=1; WANT_XVFB=0; WANT_CHROME=1; WANT_EXT=1; CLIS_ONLY=0
 for a in "$@"; do
   case "$a" in
     --authkey=*)  AUTHKEY="${a#*=}" ;;
@@ -29,13 +29,15 @@ for a in "$@"; do
     --with-xvfb)  WANT_XVFB=1 ;;    # virtual display for --chrome agents (headless boot)
     --headless|--no-chrome) WANT_CHROME=0 ;;  # skip the browser (true headless server)
     --with-chrome) WANT_CHROME=1 ;;           # (default; kept for compat)
-    --auto-extension) WANT_EXT=1 ;; # force-install the Claude-in-Chrome extension (enterprise policy)
+    --no-extension) WANT_EXT=0 ;;             # skip the Claude-in-Chrome extension policy
+    --auto-extension) WANT_EXT=1 ;;           # (default; kept for compat)
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
     -h|--help)    sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown arg: $a" >&2; exit 1 ;;
   esac
 done
+[ "$WANT_CHROME" = 0 ] && WANT_EXT=0   # no browser => no extension policy
 
 # sudo escalation. Root: none. TTY (run interactively): prime sudo once so its
 # password prompt happens up front and the quiet installs reuse the credential.

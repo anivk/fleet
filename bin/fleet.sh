@@ -1134,6 +1134,10 @@ config_validate() {
     || { echo "  ! mode must be \"server\" or \"client\""; issues=$((issues + 1)); }
   jq -e '(.general.count // 0) | type == "number"' "$FLEET_JSON" >/dev/null 2>&1 \
     || { echo "  ! general.count must be a number"; issues=$((issues + 1)); }
+  bad="$(jq -r '(.install // {} | keys) - ["deps","clis"] | .[]' "$FLEET_JSON")"
+  [[ -n "$bad" ]] && { echo "  ! unknown install key(s): $(echo $bad | tr '\n' ' ')"; issues=$((issues + 1)); }
+  jq -e '(.install.deps // []) | type == "array" and (all(.[]; type == "string"))' "$FLEET_JSON" >/dev/null 2>&1 \
+    || { echo "  ! install.deps must be an array of strings"; issues=$((issues + 1)); }
   while IFS= read -r line; do
     [[ -n "$line" ]] && { echo "  ! $line"; issues=$((issues + 1)); }
   done < <(jq -r '

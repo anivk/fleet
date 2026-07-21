@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bootstrap — provision a bare machine into a fleet-ready node. Batteries included:
 # Tailscale (+ SSH), core deps (git, jq, tmux), the agent CLIs (Claude + Codex/Node),
-# and a browser for --chrome agents — all by default.
+# and a browser for --chrome agents — all by default. Extra tooling is config-driven:
+# fleet.json's `install.deps` (e.g. az, aws, kubectl) is provisioned here too.
 # Provisioning ONLY — it does NOT install fleet. After this: run install.sh (or
 # `fleet remote-install <host>` from your laptop), then `claude login`.
 #
@@ -34,7 +35,7 @@ for a in "$@"; do
     --auto-extension) WANT_EXT=1 ;;           # (default; kept for compat)
     --no-claude)  WANT_CLAUDE=0 ;;
     --clis-only)  CLIS_ONLY=1 ;;   # skip tailscale + system deps, only touch the CLIs
-    -h|--help)    sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "bootstrap: unknown arg: $a" >&2; exit 1 ;;
   esac
 done
@@ -70,6 +71,67 @@ ensure_dep() {
   fi
   if command -v "$1" >/dev/null 2>&1; then echo "  + $1 installed"
   else echo "  ! could not install $1 — needs passwordless sudo, or run: <pkg-mgr> install $1"; fi
+}
+# --- config-driven extras (fleet.json → install.deps) -----------------------------
+# Route a tool name to the right installer. The cloud CLIs each need a vendor path
+# (none ships as a plain apt/dnf package), everything else is just a package name.
+ensure_tool() {
+  case "$1" in
+    az)      ensure_az ;;
+    aws)     ensure_aws ;;
+    kubectl) ensure_kubectl ;;
+    *)       ensure_dep "$1" ;;
+  esac
+}
+# kubectl — official release binary (arch-aware); brew on macOS.
+ensure_kubectl() {
+  command -v kubectl >/dev/null 2>&1 && { echo "  = kubectl present"; return 0; }
+  echo "  installing kubectl…"
+  if command -v brew >/dev/null 2>&1; then brew install kubectl >/dev/null 2>&1 || true
+  else
+    local a v
+    case "$(uname -m)" in x86_64|amd64) a=amd64 ;; arm64|aarch64) a=arm64 ;; *) a="" ;; esac
+    v="$(curl -fsSL https://dl.k8s.io/release/stable.txt 2>/dev/null || true)"
+    if [ -n "$a" ] && [ -n "$v" ]; then
+      curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/$v/bin/linux/$a/kubectl" 2>/dev/null \
+        && $SUDO install -m 0755 /tmp/kubectl /usr/local/bin/kubectl >/dev/null 2>&1 || true
+      rm -f /tmp/kubectl
+    fi
+  fi
+  command -v kubectl >/dev/null 2>&1 && echo "  + kubectl installed" \
+    || echo "  ! could not install kubectl — see https://kubernetes.io/docs/tasks/tools/"
+}
+# aws — CLI v2 ships only as a zipped installer on Linux (no distro package).
+ensure_aws() {
+  command -v aws >/dev/null 2>&1 && { echo "  = aws present"; return 0; }
+  echo "  installing aws cli…"
+  if command -v brew >/dev/null 2>&1; then brew install awscli >/dev/null 2>&1 || true
+  else
+    local m
+    case "$(uname -m)" in x86_64|amd64) m=x86_64 ;; arm64|aarch64) m=aarch64 ;; *) m="" ;; esac
+    command -v unzip >/dev/null 2>&1 || ensure_dep unzip
+    if [ -n "$m" ] && command -v unzip >/dev/null 2>&1; then
+      curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$m.zip" -o /tmp/awscliv2.zip 2>/dev/null \
+        && unzip -q -o /tmp/awscliv2.zip -d /tmp >/dev/null 2>&1 \
+        && $SUDO /tmp/aws/install --update >/dev/null 2>&1 || true
+      rm -rf /tmp/awscliv2.zip /tmp/aws
+    fi
+  fi
+  command -v aws >/dev/null 2>&1 && echo "  + aws installed" \
+    || echo "  ! could not install aws — see https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+}
+# az — Microsoft's own apt/dnf repo installer (their documented path).
+ensure_az() {
+  command -v az >/dev/null 2>&1 && { echo "  = az present"; return 0; }
+  echo "  installing azure cli…"
+  if command -v brew >/dev/null 2>&1; then brew install azure-cli >/dev/null 2>&1 || true
+  elif command -v apt-get >/dev/null 2>&1; then
+    curl -fsSL https://aka.ms/InstallAzureCLIDeb 2>/dev/null | $SUDO bash >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y azure-cli >/dev/null 2>&1 || true
+  elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm azure-cli >/dev/null 2>&1 || true
+  fi
+  command -v az >/dev/null 2>&1 && echo "  + az installed" \
+    || echo "  ! could not install az — see https://learn.microsoft.com/cli/azure/install-azure-cli"
 }
 ensure_node() {
   command -v npm >/dev/null 2>&1 && { echo "  = node present"; return 0; }
@@ -379,6 +441,13 @@ if [ "$CLIS_ONLY" = 0 ]; then
   for _d in git jq tmux; do ensure_dep "$_d"; done
   _missing=""; for _d in git jq tmux; do command -v "$_d" >/dev/null 2>&1 || _missing="$_missing $_d"; done
   [ -n "$_missing" ] && echo "  !! still missing:$_missing — run: sudo apt-get install -y$_missing"
+  # 2b. extra tooling from fleet.json → install.deps (jq is in place by now). Absent
+  # config (a bare box, pre-install.sh) simply means no extras — re-running init or
+  # `fleet config push` + init picks them up later.
+  _fj="${XDG_CONFIG_HOME:-$HOME/.config}/fleet/fleet.json"
+  if command -v jq >/dev/null 2>&1 && [ -r "$_fj" ]; then
+    for _d in $(jq -r '(.install.deps // []) | .[]' "$_fj" 2>/dev/null); do ensure_tool "$_d"; done
+  fi
   [ "$WANT_XVFB" = 1 ] && ensure_xvfb
   [ "$WANT_RDP" = 1 ] && ensure_rdp
   [ "$WANT_CHROME" = 1 ] && ensure_chrome

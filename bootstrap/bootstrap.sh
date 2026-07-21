@@ -205,7 +205,8 @@ _ensure_grd() {
   [ -n "$rpass" ] && $SUDO grdctl --system rdp set-credentials "$(id -un)" "$rpass" >/dev/null 2>&1 || true
   $SUDO grdctl --system rdp disable-view-only >/dev/null 2>&1 || true   # allow remote control
   $SUDO grdctl --system rdp enable >/dev/null 2>&1 || true
-  $SUDO systemctl enable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
+  $SUDO systemctl enable gnome-remote-desktop.service >/dev/null 2>&1 || true
+  $SUDO systemctl restart gnome-remote-desktop.service >/dev/null 2>&1 || true   # apply cert/creds on re-runs
   # Retire xrdp/xfce if a prior run installed them (they'd fight grd for :3389).
   command -v xrdp >/dev/null 2>&1 && $SUDO systemctl disable --now xrdp xrdp-sesman >/dev/null 2>&1 || true
   rm -f "$HOME/.xsession" 2>/dev/null || true

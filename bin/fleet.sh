@@ -640,11 +640,11 @@ hosts_scan() {
 # state (no network round-trip, so it never blocks); shown only if tailscale is
 # installed.
 cmd_remote_ls() {
-  local st="" have_ts="" h short hn state
+  local st="" stj="" have_ts="" h short hn state self seen=" " first=1 _remote_all="${_remote_all:-0}"
   command -v tailscale >/dev/null && { have_ts=1; st="$(tailscale status 2>/dev/null || true)"; }
   printf '%-10s %-26s %s\n' HOST TAILSCALE-NAME REACHABLE
   for h in "${FLEET_HOSTS[@]}"; do
-    short="${h%%:*}"; hn="${h#*:}"; state="-"
+    short="${h%%:*}"; hn="${h#*:}"; state="-"; seen+="$hn "
     if [[ -n "$have_ts" ]]; then
       if grep -Fq -- "$hn" <<<"$st"; then
         grep -F -- "$hn" <<<"$st" | grep -qi offline && state="offline" || state="online"
@@ -654,8 +654,24 @@ cmd_remote_ls() {
     fi
     printf '%-10s %-26s %s\n' "$short" "$hn" "$state"
   done
+  # Auto-discovery: surface YOUR OWN online tailnet machines (same Tailscale user) that
+  # aren't configured yet, so a new fleet box shows up without `fleet hosts add` — without
+  # flooding the list with a shared tailnet's other people. They're connectable as-is
+  # (`fleet remote <name>` takes a bare hostname); `--all` shows every online peer.
+  if [[ -n "$have_ts" ]] && command -v jq >/dev/null 2>&1; then
+    local uid filter='select(.Online==true)'
+    stj="$(tailscale status --json 2>/dev/null || true)"
+    self="$(printf '%s' "$stj" | jq -r '.Self.HostName // empty' 2>/dev/null)"
+    uid="$(printf '%s' "$stj" | jq -r '.Self.UserID // empty' 2>/dev/null)"
+    [[ "$_remote_all" == 1 || -z "$uid" ]] || filter="select(.Online==true and ((.UserID|tostring)==\"$uid\"))"
+    while read -r hn; do
+      [[ -z "$hn" || "$hn" == "$self" || "$seen" == *" $hn "* ]] && continue
+      [[ "$first" == 1 ]] && { echo "── discovered ($([[ "$_remote_all" == 1 ]] && echo "all online peers" || echo "your online machines")) ──"; first=0; }
+      printf '%-10s %-26s %s\n' "·" "$hn" "online"
+    done < <(printf '%s' "$stj" | jq -r ".Peer[]? | $filter | .HostName // empty" 2>/dev/null)
+  fi
   [[ -n "$have_ts" ]] || echo "(install tailscale to see reachability)"
-  echo "attach one with: fleet remote <host>"
+  echo "attach one with: fleet remote <host>   ·   pin one: fleet hosts add <short> <host>"
 }
 
 # short name (from FLEET_HOSTS) -> tailscale hostname; a bare hostname passes through.
@@ -764,8 +780,10 @@ cmd_update() {
 # Requires: tailscale (with SSH) on both ends, and fleet installed on the remote.
 cmd_remote() {
   local target=${1:-}
+  _remote_all=0
   case "$target" in
-    ""|ls|list) cmd_remote_ls; return ;;
+    --all)         _remote_all=1; cmd_remote_ls; return ;;
+    ""|ls|list)    [[ "${2:-}" == --all ]] && _remote_all=1; cmd_remote_ls; return ;;
   esac
   remote_exec "$(resolve_host "$target")" attach
 }

@@ -44,6 +44,14 @@ _cfgdir="${XDG_CONFIG_HOME:-$HOME/.config}/fleet"
 FLEET_JSON="${FLEET_JSON:-$_cfgdir/fleet.json}"
 STATE_DIR="$_cfgdir/state"
 FLEET_STATE_TTL="${FLEET_STATE_TTL:-900}"   # state files older than this ⇒ scrape
+# Pin the tmux socket to a fixed path so `fleet` reaches the SAME server from any login
+# context. A bare `tmux` derives its socket dir from the ambient TMUX_TMPDIR/XDG_RUNTIME_DIR,
+# which differ between console, RDP/xfce and ssh sessions — so a running fleet looked "not
+# running" from a different shell. /tmp is one fixed global path in every context; keep it
+# short too (AF_UNIX caps socket paths at ~104 chars). Route every tmux call through this
+# wrapper; `exec tmux` sites pass -S explicitly (exec bypasses shell functions).
+TMUX_SOCK="${FLEET_TMUX_SOCK:-/tmp/fleet-$(id -u).sock}"
+tmux() { command tmux -S "$TMUX_SOCK" "$@"; }
 _LETTERS="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 # Roster + per-agent settings as parallel indexed arrays (bash-3.2 safe). An agent
@@ -338,7 +346,7 @@ cmd_start() {
   echo
   cmd_status
   echo
-  echo "attach: tmux attach -t $SESSION   (detach: Ctrl-b d)"
+  echo "attach: fleet attach   (or: tmux -S $TMUX_SOCK attach -t $SESSION; detach: Ctrl-b d)"
   echo "remote: claude.ai/code"
 }
 
@@ -426,11 +434,12 @@ cmd_attach() {
     tmux select-window -t "${pane%.*}"   # works in grid (selects the group window) or spread
     tmux select-pane -t "$pane"
   fi
-  # Attach if outside tmux; switch-client if already inside one.
+  # Attach if outside tmux; switch-client if already inside one. exec bypasses the
+  # tmux() wrapper (it runs the real binary), so pass the pinned socket explicitly.
   if [[ -n "${TMUX:-}" ]]; then
-    exec tmux switch-client -t "$SESSION"
+    exec tmux -S "$TMUX_SOCK" switch-client -t "$SESSION"
   else
-    exec tmux attach -t "$SESSION"
+    exec tmux -S "$TMUX_SOCK" attach -t "$SESSION"
   fi
 }
 

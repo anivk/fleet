@@ -7,6 +7,10 @@ command -v tmux >/dev/null || { echo "SKIP: no tmux"; exit 0; }
 TDIR=$(mktemp -d); export XDG_CONFIG_HOME="$TDIR/cfg"
 mkdir -p "$XDG_CONFIG_HOME/fleet/state"
 S=fleet_test_$$; export FLEET_TMUX_SESSION="$S" FLEET_OWNER=my FLEET_LOCATION=nyc
+# fleet pins its tmux socket; build the test session on that same socket so status
+# scrapes it. Exported so the fleet.sh subprocess reads the same socket.
+export FLEET_TMUX_SOCK="/tmp/fleet_test_$$.sock"
+tmux(){ command tmux -S "$FLEET_TMUX_SOCK" "$@"; }
 cleanup(){ tmux kill-session -t "$S" 2>/dev/null; rm -rf "$TDIR"; }; trap cleanup EXIT
 
 # Two panes, tagged like real agents; both just sleep.

@@ -803,13 +803,59 @@ cmd_update() {
 # fleet remote ls      — list configured hosts (see cmd_remote_ls).
 # Requires: tailscale (with SSH) on both ends, and fleet installed on the remote.
 cmd_remote() {
-  local target=${1:-}
+  local a target="" use_cmux=0
   _remote_all=0
-  case "$target" in
-    --all)         _remote_all=1; cmd_remote_ls; return ;;
-    ""|ls|list)    [[ "${2:-}" == --all ]] && _remote_all=1; cmd_remote_ls; return ;;
-  esac
-  remote_exec "$(resolve_host "$target")" attach
+  for a in "$@"; do
+    case "$a" in
+      --cmux)  use_cmux=1 ;;                 # open the attach in a new cmux workspace
+      --all)   _remote_all=1 ;;
+      attach)  ;;                            # the only remote action; implied
+      *)       [[ -z "$target" ]] && target="$a" ;;
+    esac
+  done
+  case "$target" in ""|ls|list) cmd_remote_ls; return ;; esac
+  local host; host="$(resolve_host "$target")"
+  [[ "$use_cmux" == 1 ]] && { cmd_remote_cmux "$host"; return; }
+  remote_exec "$host" attach
+}
+
+# fleet remote <host> --cmux — open the remote fleet attach in a NEW cmux workspace
+# (cmux.app, macOS). Run it from inside cmux: the cmux CLI only accepts cmux-spawned
+# callers unless CMUX_SOCKET_PASSWORD is set. cmux gives the workspace a PTY, so the
+# remote `fleet attach` (tmux) works; SSH goes over the tailnet keylessly (Tailscale SSH).
+cmd_remote_cmux() {
+  local host=$1 cmux fqdn
+  cmux="$(command -v cmux 2>/dev/null || echo /Applications/cmux.app/Contents/Resources/bin/cmux)"
+  [[ -x "$cmux" ]] || die "cmux not found (install cmux.app, or add its CLI to PATH)"
+  fqdn="$(tailscale status --json 2>/dev/null | jq -r --arg h "$host" '.Peer[]? | select(.HostName==$h) | .DNSName // empty' 2>/dev/null | sed 's/\.$//')"
+  [[ -n "$fqdn" ]] || fqdn="$host"
+  echo "cmux -> $FLEET_SSH_USER@$fqdn : fleet attach"
+  exec "$cmux" ssh "$FLEET_SSH_USER@$fqdn" --name "fleet: $host" \
+    --ssh-option StrictHostKeyChecking=no --ssh-option UserKnownHostsFile=/dev/null \
+    --command 'fleet attach'
+}
+
+# fleet rdp-reset [host] — terminate this user's hung graphical (wayland/x11) sessions.
+# grd remote-login leaves a session behind when the RDP client closes abruptly (Cmd-W),
+# and that stale session then blocks the next login. This clears them. Leaves ssh/tty
+# sessions alone. On a host: runs over Tailscale SSH. Run it while DISCONNECTED (it kills
+# every graphical session for the user, including one you're actively in).
+cmd_rdp_reset() {
+  local host="${1:-}"
+  if [[ -n "$host" ]]; then
+    local sshhost; sshhost="$(_sshhost "$host")"
+    echo "rdp-reset -> $sshhost"
+    exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$sshhost" \
+      'n=0; for s in $(loginctl list-sessions --no-legend | awk -v u="$(id -un)" "\$3==u{print \$1}"); do case "$(loginctl show-session "$s" -p Type --value)" in x11|wayland|mir) loginctl terminate-session "$s" >/dev/null 2>&1 && n=$((n+1));; esac; done; echo "rdp-reset: cleared $n hung graphical session(s)"'
+  fi
+  command -v loginctl >/dev/null || die "loginctl is Linux-only — run: fleet rdp-reset <host>"
+  local s n=0
+  for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$(id -un)" '$3==u{print $1}'); do
+    case "$(loginctl show-session "$s" -p Type --value 2>/dev/null)" in
+      x11|wayland|mir) loginctl terminate-session "$s" 2>/dev/null && { echo "  terminated $s"; n=$((n+1)); } ;;
+    esac
+  done
+  echo "rdp-reset: cleared $n hung graphical session(s)"
 }
 
 # Resolve a host alias to a full user@host for tailscale ssh (pass through an
@@ -1555,6 +1601,7 @@ case "${1:-start}" in
   up)      FLEET_RESUME=1 cmd_start ;;   # explicit resume (login/boot auto-start; now == start)
   remote)  shift; cmd_remote "$@" ;;     # attach another machine's fleet over tailscale
   remote-ssh) shift; cmd_remote_ssh "$@" ;;  # a plain shell (or command) on a remote
+  rdp-reset) shift; cmd_rdp_reset "$@" ;;    # clear hung RDP graphical sessions ([host])
   keys)    shift; cmd_keys "$@" ;;       # remote git auth: agent forwarding + per-host keys
   remote-install) shift; cmd_remote_install "$@" ;;  # clone + install fleet on a remote
   tray)    shift; cmd_tray "$@" ;;       # menubar monitor (start/stop/status/…)

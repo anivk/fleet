@@ -61,26 +61,19 @@ cache dir on first run — there's nothing else to clone.
 **From source** (dev): `git clone` then `go build -o fleet .` (needs Go). Everything below
 works the same whether you run the binary or `bin/fleet.sh` directly.
 
-**No repos are configured out of the box** — the installer only wires up the
-`fleet` command and leaves an empty roster at `~/.config/fleet/config`. Add repo
-agents with `fleet setup`, which clones a GitHub repo N times into
-`~/co/<repo>-1..N` and records it in the config:
+**No repos are configured out of the box.** A fresh install gives you 4 general
+**scratch agents** (`agent-A..D` — empty `~/co/agent-*` workspaces, auto-created)
+and an empty repo roster in `~/.config/fleet/fleet.json`. Add **repo agents** with
+`fleet setup`, which clones a GitHub repo N times and records them in the config:
 
 ```sh
 fleet setup your-org/your-repo 4     # 4 clones of github.com/your-org/your-repo
 ```
 
-The repo basename becomes the workspace prefix (`your-repo` → `your-repo-1..4`),
-and the roster is saved to `~/.config/fleet/config`, so `fleet start` knows what to
-launch. Re-run any time to change the repo or count (existing clones are left in
-place).
-SSH by default; for HTTPS: `FLEET_GIT_BASE=https://github.com/ fleet setup <owner>/<repo> N`.
-
-Then create the general (scratch) workspaces:
-
-```sh
-for a in A B C D; do mkdir -p ~/co/agent-$a && git -C ~/co/agent-$a init; done
-```
+The repo basename becomes the workspace prefix (`your-repo` → `~/co/your-repo-1..4`),
+saved to `fleet.json` so `fleet start` knows what to launch. Re-run any time to change
+the repo or count (existing clones are left in place). SSH by default; for HTTPS:
+`FLEET_GIT_BASE=https://github.com/ fleet setup <owner>/<repo> N`.
 
 ## Commands
 
@@ -146,8 +139,7 @@ source of truth; `fleet setup`, `fleet hosts`, and the installer all read and wr
     "review-1": { "repo": "acme/app", "harness": "codex" },
     "personal-1": { "repo": "youruser/personal", "chrome": false }
   },
-  "hosts": { "nyc": "my-nyc-box", "desktop": "studio-mac" },
-  "install": { "deps": [], "clis": ["claude", "codex"] }
+  "hosts": { "nyc": "my-nyc-box", "desktop": "studio-mac" }
 }
 ```
 
@@ -205,8 +197,12 @@ straight into the tray for local agents; a **client** machine shows remote hosts
 (via `fleet hosts --json`, polled over Tailscale SSH) only — there's nothing
 local to hook into.
 
+The tray is part of the `fleet` binary (`fleet tray run` runs it in-process — no
+separate app to build). On macOS `fleet tray start` wraps it in a tiny `Fleet.app`
+so it shows as "Fleet" with no Dock icon.
+
 ```sh
-fleet tray start     # launch the tray (needs tray/fleet-tray built — see below)
+fleet tray start     # launch the tray
 fleet tray status    # is it running?
 fleet tray stop      # kill it
 ```
@@ -220,9 +216,7 @@ fleet tray disable-autostart   # from the agent autostart installed in server mo
 ```
 
 **Requirements:**
-- The **built `fleet-tray` binary** at `tray/fleet-tray`. `install.sh` builds it
-  automatically when [Go](https://go.dev) is on `PATH`; otherwise build it by hand:
-  `cd tray && go build -o fleet-tray .`
+- The `fleet` binary (it carries the tray — nothing extra to build).
 - [Tailscale](https://tailscale.com) to see and reach remote hosts (same requirement
   as `fleet remote`).
 
@@ -234,11 +228,24 @@ sudo apt install gnome-shell-extension-appindicator
 gnome-extensions enable ubuntu-appindicators@ubuntu.com
 ```
 
-## Auto-start on login
+## Auto-start
 
-`autostart/fleet.desktop` runs `fleet up` on graphical login, resuming each agent's last
-conversation. It's an XDG autostart entry (not systemd) because browser agents need the desktop
-environment (`DISPLAY`/`WAYLAND`) that a graphical login provides.
+Two mechanisms, depending on whether your agents need a browser:
+
+- **Login autostart** (default in server mode) — `fleet install` drops an XDG autostart
+  entry (Linux) / launchd agent (macOS) that runs `fleet up` on **graphical login**,
+  resuming each agent's last conversation. This is the default because `--chrome`
+  browser agents need the desktop environment (`DISPLAY`/`WAYLAND`) a login provides.
+- **Boot service** (headless servers) — `fleet boot enable` installs a **systemd user
+  service** and enables *linger*, so the fleet starts on **boot, before any login**.
+  Ideal for a headless box; `--chrome` agents won't work without a display, so use it
+  for non-browser agents (or set up a virtual display).
+
+```sh
+fleet boot enable      # start on boot, before login (Linux/systemd)
+fleet boot status      # enabled? lingering? active?
+fleet boot disable     # remove the boot service
+```
 
 ## Multi-user / shared setup
 
@@ -258,11 +265,15 @@ Edit once, both users get it. Credentials, clipboard history, and workspaces sta
 ## Files
 
 ```
-bin/fleet.sh          the launcher (start/grid/spread/restart/attach/…)
-shell/fleet.bashrc    the `fleet` command + tab-completion
-tmux.conf             mouse, grid pane labels, keybindings, status bar
-autostart/fleet.desktop  login auto-start (resume)
-install.sh            wires the above into your dotfiles
+main.go, embed.go, extract.go   the Go binary — embeds + runs the bash launcher
+internal/tray/                  the koala menubar tray (compiled into the binary)
+bin/fleet.sh                    the launcher (start/grid/spread/restart/attach/…)
+shell/fleet.bashrc              the `fleet` command + tab-completion (source installs)
+tmux.conf                       mouse, grid pane labels, keybindings, status bar
+bootstrap/bootstrap.sh          provision a box: Tailscale + deps + claude
+install.sh                      wire fleet: config, tmux, hooks, autostart
+get.sh                          curl installer — fetch the release binary
+autostart/fleet.desktop         login auto-start (resume)
 ```
 
 ## How agents are identified
@@ -277,10 +288,9 @@ identically whether the fleet is gridded or spread.
 `fleet` installs the same way on every machine (laptop, desktop, VM), so you can hop between
 their fleets over your Tailscale network.
 
-**Configure your machines** with `fleet hosts add` (or by editing
-`~/.config/fleet/hosts` directly — one entry per line, `#` comments ignored). No
-remote machines are configured by default; this box only knows itself until you
-add them:
+**Configure your machines** with `fleet hosts add` (or `fleet config edit` — hosts
+live in `fleet.json`'s `hosts` map). No remote machines are configured by default;
+this box only knows itself until you add them:
 
 ```sh
 fleet hosts add nyc my-nyc-box     # alias 'nyc' -> tailscale host 'my-nyc-box'
@@ -290,20 +300,22 @@ fleet hosts                        # list them
 ```
 
 Aliases are optional: an entry with no `short:` is shown by its bare hostname.
-Bootstrap fleet on a brand-new machine over Tailscale in one step:
+
+The recommended way to set up a new box is the binary flow — `curl … get.sh | sh`
+then `fleet bootstrap` + `fleet install` on the box (see [Setting up a new
+machine](#setting-up-a-new-machine)). `fleet remote-install` is the **source-based**
+alternative: it gets this repo onto the remote and runs `install.sh` (fleet wiring
+only — the box must already be provisioned via `bootstrap`, since Tailscale is a
+prerequisite for reaching it anyway):
 
 ```sh
-fleet remote-install nyc           # install into ~/.fleet on the remote + run its installer
+fleet remote-install nyc           # source checkout into ~/.fleet + run install.sh
 ```
 
-`fleet remote-install [--copy] [--global] <host> [location]` gets the repo onto the
-remote and runs `install.sh` in server mode; the remote's location tag defaults to
-the host's short name. By default it installs **per-user into `~/.fleet`** (no sudo);
-`--global` installs into **`/opt/fleet`** (a system path — `sudo` creates it, then
-it's owned by you so updates stay sudo-free). Either way the path is recorded in
-`~/.config/fleet/home`, so `remote`/`update`/`respawn` resolve through it. By default
-it `git clone`s the origin on the remote (needs `git` + clone access there); if that
-fails — or with `--copy` — it falls back to `rsync`ing this checkout over Tailscale,
+`fleet remote-install [--copy] [--global] <host> [location]` installs **per-user into
+`~/.fleet`** by default (no sudo); `--global` uses **`/opt/fleet`** (`sudo` creates it,
+then chowns it to you so updates stay sudo-free). It `git clone`s the origin on the
+remote; if that fails — or with `--copy` — it `rsync`s this checkout over Tailscale,
 so a machine with no GitHub access still works:
 
 ```sh
@@ -327,66 +339,46 @@ bare Tailscale hostname that isn't listed. The tray polls exactly these hosts to
 
 ### Setting up a new machine
 
-**Prereq:** the new box is on your tailnet with Tailscale SSH enabled (once, on
-the box: `tailscale up --ssh`).
+Everything fleet does remotely goes **over Tailscale**, so the one thing that must
+happen on the box first is Tailscale — you can't reach it otherwise. The rest is the
+binary flow.
 
-**From your laptop** — register, provision, and configure the box:
-
-```sh
-fleet hosts add nyc my-nyc-box     # 1. name it (alias 'nyc' -> tailscale host)
-fleet keys forward on              # 2. so the install-time git clones run as you
-fleet remote-install nyc           # 3. clone + install fleet (server mode) on nyc
-fleet keys setup nyc               # 4. durable key so nyc's agents can push —
-                                   #    add it to GitHub when prompted
-fleet config push nyc              # 5. push your agent roster into nyc's config
-```
-
-**On the box** — hop on interactively for the logins and first start (an
-interactive shell is where the `fleet` command and a login TTY are available):
+**Prereq — on the box:** get it on your tailnet (once). An auth key makes it
+non-interactive (great for cloud-init):
 
 ```sh
-fleet remote-ssh nyc               # 6. opens a shell on nyc; there, run:
-  #   claude login                 #      log the CLIs in (device flow — approve
-  #   codex login                  #      in your browser; API keys are the alternative)
-  #   fleet doctor                 #      verify: tools, config, auth all green
-  #   fleet start                  #      launch the fleet
-  #   exit
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --ssh                 # or --authkey=tskey-… for no browser
 ```
 
-**Back on your laptop** — watch it:
+**Then, on the box:** install fleet and bring it up. `fleet bootstrap` needs `sudo`
+for packages, so run it there (interactively):
 
 ```sh
-fleet remote nyc                   # 7. attach nyc's tmux session (the tray shows it too)
+curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh   # the binary
+fleet bootstrap        # deps (git/jq/tmux) + claude   (tailscale already up)
+claude login           # once — device flow (or export ANTHROPIC_API_KEY)
+fleet install          # wire config + hooks + autostart
+fleet setup you/repo 4 # (optional) add repo agents; or `fleet config push` from your laptop
+fleet start            # launch the agents      (fleet boot enable → start on boot)
 ```
 
-1. **Name it** — the only place the machine is registered; nothing is configured
-   by default.
-2. **Forward your keys** *(only if the box needs GitHub)* — fleet sends no keys by
-   default, so the `git clone` in step 3 would otherwise fail (and fall back to
-   `rsync`). `keys forward on` lets those clones authenticate as you. Skip for
-   public repos or if you `--copy` instead.
-3. **Install** — installs fleet into `~/.fleet` on nyc (or `/opt/fleet` with
-   `--global`) and runs `install.sh` in
-   **server** mode, provisioning `git`/`jq`/`tmux`, the CLIs, and any
-   `install.deps`. `--copy` `rsync`s this checkout instead (for a box with no
-   GitHub access at all).
-4. **Give it its own key** — forwarding only lasts a session, so the autonomous
-   agents need a durable credential to push. `keys setup` generates one on nyc and
-   shows how to add it to GitHub (user key = broad, deploy key = one repo). Do this
-   before the agents start, since `fleet start` clones each agent's repo.
-5. **Push the roster** — merges your `agents`/`general`/`hosts` into nyc's
-   `fleet.json`, preserving its per-machine `mode`/`location`. `--restart` relaunches
-   immediately with the new config.
-6. **Log in + start** — the installer can't authenticate headlessly; `claude login`
-   / `codex login` open a device-code flow. `fleet doctor` flags anything still
-   missing, then `fleet start` launches every agent. *(From the laptop you can also
-   `fleet respawn nyc` to start a stopped fleet without attaching.)*
-7. **Watch** — `fleet remote nyc` attaches its tmux; the [menubar
-   tray](#menubar-tray) shows it too.
+**From your laptop — register + watch it:**
 
-`fleet remote-ssh <host> [cmd]` drops you into a plain shell (or runs one
-command) on a remote — unlike `fleet remote`, it doesn't need a running fleet, so
-it's what you use to `claude login`, provision, or debug a box.
+```sh
+fleet hosts add <hostname>    # so `fleet remote` and the tray see it
+fleet remote <hostname>       # attach its tmux (the tray shows it too)
+```
+
+Notes:
+- **`fleet config push <host>`** ships your agent roster to the box (merging, so it
+  keeps its own `mode`/`location`) instead of `fleet setup` on the box.
+- **Repo agents need GitHub access on the box** to clone/push — see
+  [Remote git access](#remote-git-access-fleet-keys) (`fleet keys`).
+- **`fleet remote-ssh <host> [cmd]`** drops you into a plain shell on a remote (works
+  even when its fleet isn't running) — handy for `claude login`, provisioning, debugging.
+- Prefer to drive it all from the laptop? `fleet remote-install <host>` pushes the
+  source + wires fleet (the box still needs `bootstrap` for deps/claude).
 
 ### Remote git access (`fleet keys`)
 
@@ -421,23 +413,24 @@ key (B), which is unambiguous — the box has exactly one.
 
 ## Updating
 
-`fleet` keeps itself current from git:
+**Binary install:** re-run `get.sh` to pull the latest release binary (or upgrade the
+agent CLIs with `fleet bootstrap --clis-only`):
 
 ```sh
-fleet update            # fast-forward this machine's checkout + re-wire dotfiles
+curl -fsSL https://raw.githubusercontent.com/anivk/fleet/main/get.sh | sh
+```
+
+**Source checkout:** `fleet update` fast-forwards the checkout and re-wires:
+
+```sh
+fleet update            # fast-forward this checkout + re-wire; upgrade the agent CLIs
 fleet update laptop     # do the same on another machine over Tailscale SSH
 ```
 
-`fleet update` self-locates its own checkout, `git fetch`es, and **fast-forwards
-only** — if you have local commits or a dirty tree it refuses rather than clobber
-them. When something changed it re-runs the (idempotent) installer so new shell /
-tmux / autostart wiring lands. Already-running agents keep the old launcher until
-you `fleet restart <name>` (or `fleet stop && fleet start`).
-
-Remote hop requires [Tailscale](https://tailscale.com) with SSH enabled
-(`tailscale set --ssh`) on both ends, that you're authorized on the tailnet, and fleet installed
-on the remote (the installer records the repo path in `~/.config/fleet/home` so the remote is
-found regardless of its login shell).
+It `git fetch`es and **fast-forwards only** — a dirty tree or local commits make it
+refuse rather than clobber. Already-running agents keep the old launcher until you
+`fleet restart <name>` (or `fleet stop && fleet start`). The remote hop requires
+[Tailscale](https://tailscale.com) with SSH on both ends and `fleet` on the remote's PATH.
 
 ## Requirements
 
@@ -456,21 +449,10 @@ found regardless of its login shell).
 - **Memory sync** (if used) — `inotify-tools` on Linux (`sudo apt install inotify-tools`) for the
   write-watcher; `fswatch` on macOS
 
-## Install (macOS + Linux, bash + zsh)
+## Client vs server mode
 
-`install.sh` detects your OS and login shell: it sources the `fleet` command into the right rc
-file, points tmux at the bundled config, records the repo path, and installs a login auto-start
-(XDG `.desktop` on Linux, a launchd agent on macOS). Re-runnable and idempotent.
-
-Tag the machine's location at install time so its agents are named for where they run:
-
-```sh
-FLEET_LOCATION=laptop ./install.sh    # agents become my-laptop-* instead of my-nyc-*
-```
-
-### Client vs server mode
-
-A machine installs in one of two modes (recorded in `~/.config/fleet/mode`):
+A machine installs in one of two modes (recorded in `fleet.json`). `fleet install`
+reads `FLEET_MODE` / `FLEET_LOCATION` at install time:
 
 - **`server`** (default) — a full node: runs its own local agents and installs a
   login autostart. Your desktops and VMs.
@@ -480,8 +462,8 @@ A machine installs in one of two modes (recorded in `~/.config/fleet/mode`):
   all still work. Good for a laptop you only use to drive remote fleets.
 
 ```sh
-FLEET_MODE=client FLEET_LOCATION=laptop ./install.sh   # attach-only laptop
-./install.sh                                            # server (desktop / VM)
+FLEET_MODE=client FLEET_LOCATION=laptop fleet install   # attach-only laptop
+fleet install                                           # server (desktop / VM)
 ```
 
 Switching an existing install to client mode also removes the autostart entry a
@@ -489,11 +471,15 @@ prior server install left behind. `fleet update` preserves the chosen mode.
 
 ## Development
 
-CI (`.github/workflows/ci.yml`) runs the bash test suite (`tests/test_*.sh`) and the Go
-tray's `vet` / `test` / `build` / `gofmt` on every push and PR.
+The launcher is bash (`bin/fleet.sh`), embedded into a Go binary (`main.go` +
+`internal/tray/`) via `go:embed` and extracted to a cache dir at runtime. Build it with
+`go build -o fleet .`.
 
-Cutting a release tags `v*`, which triggers `.github/workflows/release.yml` to build the
-`fleet-tray` binaries (Linux amd64/arm64, macOS arm64) and attach them to a GitHub release:
+CI (`.github/workflows/ci.yml`) runs the bash test suite (`tests/test_*.sh`) and the Go
+`vet` / `test` / `build` / `gofmt` on every push and PR. Cutting a release tags `v*`,
+which triggers `.github/workflows/release.yml` to build the `fleet` binaries
+(`fleet-{linux,darwin}-{amd64,arm64}`) and attach them to a GitHub release; `get.sh`
+downloads the right one.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0

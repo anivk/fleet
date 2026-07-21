@@ -987,6 +987,66 @@ if command -v fleet >/dev/null 2>&1; then F=fleet; else F="$(cat ~/.config/fleet
 
 # fleet tray {start|stop|status|enable-autostart|disable-autostart}
 # The menubar monitor. Runs on client OR server. Autostart is OPT-IN.
+# fleet boot {enable|disable|status} — start the fleet on BOOT, before any login
+# (Linux/systemd). Unlike the XDG login-autostart (which only fires on graphical
+# login), this installs a systemd *user* service + enables linger, so a headless
+# server comes up with its fleet already running. Note: --chrome browser agents
+# need a graphical session, so this suits non-chrome agents (or a virtual display).
+cmd_boot() {
+  local sub=${1:-status} user; user="$(id -un)"
+  [[ "$(uname -s)" == Linux ]] || die "fleet boot is Linux/systemd only (macOS starts agents via the login autostart)"
+  command -v systemctl >/dev/null 2>&1 || die "systemd not found (systemctl) — can't install a boot service"
+  local unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/fleet.service"
+  local fbin="${FLEET_BIN:-}"; [[ -z "$fbin" || "$fbin" == *.sh ]] && fbin="$(command -v fleet 2>/dev/null || echo "$FLEET_HOME/bin/fleet.sh")"
+  case "$sub" in
+    enable|on)
+      mkdir -p "$(dirname "$unit")"
+      cat > "$unit" <<UNIT
+[Unit]
+Description=fleet — Claude Code agent fleet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$fbin up
+ExecStop=$fbin stop
+
+[Install]
+WantedBy=default.target
+UNIT
+      systemctl --user daemon-reload
+      systemctl --user enable fleet.service >/dev/null 2>&1 && echo "  + fleet.service enabled (user)"
+      # linger makes the user's systemd manager (and thus fleet.service) start at
+      # boot without a login. Needs root.
+      if loginctl show-user "$user" -p Linger 2>/dev/null | grep -q 'Linger=yes'; then
+        echo "  = linger already on"
+      else
+        echo "  enabling linger (needs sudo) so fleet starts before login…"
+        sudo loginctl enable-linger "$user" >/dev/null 2>&1 && echo "  + linger on" \
+          || echo "  ! could not enable linger — run: sudo loginctl enable-linger $user"
+      fi
+      systemctl --user start fleet.service >/dev/null 2>&1 || true
+      echo "boot: fleet starts on boot (before login)."
+      echo "note: --chrome browser agents need a graphical session; this suits non-chrome agents."
+      ;;
+    disable|off)
+      systemctl --user disable --now fleet.service >/dev/null 2>&1 || true
+      rm -f "$unit"; systemctl --user daemon-reload >/dev/null 2>&1 || true
+      echo "boot: disabled (fleet.service removed)."
+      echo "  (to also stop the user manager at boot: sudo loginctl disable-linger $user)"
+      ;;
+    status)
+      if systemctl --user is-enabled fleet.service >/dev/null 2>&1; then
+        local linger; linger="$(loginctl show-user "$user" -p Linger 2>/dev/null | cut -d= -f2)"
+        echo "boot: enabled (linger=${linger:-?}) — $(systemctl --user is-active fleet.service 2>/dev/null)"
+      else echo "boot: not enabled (enable with: fleet boot enable)"; fi
+      ;;
+    *) die "usage: fleet boot {enable|disable|status}" ;;
+  esac
+}
+
 # Generate a minimal Fleet.app wrapper around `<fbin> tray run` so macOS shows the
 # menubar agent as "Fleet" with NO Dock icon (LSUIElement). Regenerated each start,
 # so it always points at the current binary.
@@ -1203,6 +1263,7 @@ LAUNCH & LIFECYCLE
   fleet stop                        kill the session (the only thing that stops agents)
   fleet restart [--restart-fresh] <agent>   restart one agent in place (resumes)
   fleet respawn [host]              revive dead agents + start any missing (local or a host)
+  fleet boot {enable|disable}       start the fleet on boot, before login (Linux/systemd)
 
 DRIVE AGENTS  (no need to attach)
   fleet send <agent> <text>         type text into an agent, then Enter
@@ -1263,6 +1324,7 @@ case "${1:-start}" in
   keys)    shift; cmd_keys "$@" ;;       # remote git auth: agent forwarding + per-host keys
   remote-install) shift; cmd_remote_install "$@" ;;  # clone + install fleet on a remote
   tray)    shift; cmd_tray "$@" ;;       # menubar monitor (start/stop/status/…)
+  boot)    shift; cmd_boot "$@" ;;       # start on boot before login (Linux/systemd)
   hosts)   shift; cmd_hosts "$@" ;;      # list/add/rm remote hosts (or --json for the tray)
   config)  shift; cmd_config "$@" ;;     # fleet.json: path | edit | push [host]
   send)    shift; cmd_send "$@" ;;       # type text into a running agent's pane

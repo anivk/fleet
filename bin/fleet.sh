@@ -465,27 +465,34 @@ cmd_attach() {
 # it's idempotent — safe to run when already gridded.
 cmd_grid() {
   tmux has-session -t "$SESSION" 2>/dev/null || die "fleet not running (start it first)"
-  local g gname members m src base
+  local per="${FLEET_GRID_PER:-4}"          # max panes per grid window; overflow -> pages
+  local g gname members m src base count page wname widx wn
   for g in "${GRID_GROUPS[@]}"; do
     gname="${g%%:*}"; members="${g#*:}"
-    base=""
+    base=""; count=0; page=1
     for m in $members; do
       src="$(pane_for "$(disp "$m")")"        # session:win.pane, or empty if not running
       [[ -n "$src" ]] || continue
-      if [[ -z "$base" ]]; then
-        tmux rename-window -t "${src%.*}" "$gname" 2>/dev/null || true
-        base="${src%.*}"                       # session:window that becomes the group
+      if [[ -n "$base" && "${src%.*}" == "$base" ]]; then count=$((count+1)); continue; fi  # already here
+      if [[ -z "$base" || "$count" -ge "$per" ]]; then
+        # start a new page window: page 1 = grid-<group>, page N>1 = grid-<group>-N.
+        wname="$gname"; [[ "$page" -gt 1 ]] && wname="$gname-$page"
+        tmux rename-window -t "${src%.*}" "$wname" 2>/dev/null || true
+        base="${src%.*}"; count=1; page=$((page+1))
       else
-        [[ "${src%.*}" == "$base" ]] && continue   # already in the group window
         tmux select-layout -t "$base" tiled 2>/dev/null || true   # make room before the join
         tmux join-pane -s "$src" -t "$base" 2>/dev/null || true
+        count=$((count+1))
       fi
     done
-    [[ -n "$base" ]] && tmux select-layout -t "$base" tiled 2>/dev/null || true
+    # tile every page window of this group (grid-<group> and grid-<group>-N)
+    while read -r widx wn; do
+      case "$wn" in "$gname"|"$gname"-*) tmux select-layout -t "$SESSION:$widx" tiled 2>/dev/null || true ;; esac
+    done < <(tmux list-windows -t "$SESSION" -F '#{window_index} #{window_name}' 2>/dev/null)
   done
   echo "gridded: $(tmux list-windows -t "$SESSION" -F '#W' | tr '\n' ' ')"
-  echo "  panes: Ctrl-b <arrow> or click · zoom one full-screen: Ctrl-b z (toggles)"
-  echo "  windows: Ctrl-b <n> or click the bar · back to one-window-per-agent: fleet spread"
+  echo "  ≤$per panes/window; extras overflow to grid-<group>-2, -3, … (Ctrl-b <n> or click to page)"
+  echo "  zoom one full-screen: Ctrl-b z (toggles) · back to one-window-per-agent: fleet spread"
 }
 
 # Break the LIVE panes back into one window per agent. NON-DESTRUCTIVE — break-pane

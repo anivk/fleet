@@ -128,77 +128,128 @@ ensure_chrome() {
   fi
   _have_browser && echo "  + browser installed" || echo "  ! could not install a browser — install Chrome/Chromium manually"
 }
-# xrdp — a remote desktop reachable over Tailscale (RDP on :3389). Handy for logging
-# into the box's GUI to install the Claude-in-Chrome extension. Over Tailscale there's
-# no public port to open; if ufw is active we allow 3389 on the tailnet only.
+# Remote desktop over Tailscale (RDP :3389) — for logging into the GUI to install the
+# Claude-in-Chrome extension etc. Modern GNOME (49+) is Wayland-only and xrdp is Xorg-only,
+# so xrdp CANNOT serve GNOME; prefer gnome-remote-desktop (GNOME's own RDP, serves the real
+# desktop headless). Fall back to xrdp + a lightweight xfce session only where there's no
+# GNOME. Either way a "single graphical session" autostart keeps console and RDP consistent:
+# the newest login boots the other. Over Tailscale we allow :3389 on the tailnet only.
 ensure_rdp() {
   [ "$OS" = Linux ] || { echo "  · --with-rdp: Linux only"; return 0; }
+  _rdp_single_session      # console<->RDP consistency (runs in GNOME and xfce sessions alike)
+  if command -v gnome-shell >/dev/null 2>&1; then
+    _ensure_grd && { _rdp_ufw; return 0; }
+    echo "  · gnome-remote-desktop unavailable — falling back to xrdp + xfce"
+  fi
+  _ensure_xrdp; _rdp_ufw
+}
+
+# Open RDP on the tailnet only (never a public port); no-op if ufw is inactive/absent.
+_rdp_ufw() {
+  command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qiw active || return 0
+  $SUDO ufw allow in on tailscale0 to any port 3389 proto tcp >/dev/null 2>&1 \
+    || $SUDO ufw allow 3389/tcp >/dev/null 2>&1 || true
+}
+
+# One graphical session per user: whichever graphical login happens last terminates the
+# others (so console and RDP never coexist). XDG autostart runs in GNOME and xfce alike;
+# loginctl terminate is permitted non-interactively by the polkit rule below. ssh/tty
+# sessions are Type=tty and left alone.
+_rdp_single_session() {
+  mkdir -p "$HOME/.local/bin" "$HOME/.config/autostart"
+  cat > "$HOME/.local/bin/fleet-session-uniq" <<'UNIQ'
+#!/bin/sh
+# fleet: keep one graphical session per user — newest login boots the others.
+me="${XDG_SESSION_ID:-}"
+for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$(id -un)" '$3==u{print $1}'); do
+  [ "$s" = "$me" ] && continue
+  case "$(loginctl show-session "$s" -p Type --value 2>/dev/null)" in
+    x11|wayland|mir) loginctl terminate-session "$s" >/dev/null 2>&1 ;;
+  esac
+done
+UNIQ
+  chmod +x "$HOME/.local/bin/fleet-session-uniq"
+  cat > "$HOME/.config/autostart/fleet-session-uniq.desktop" <<DESK
+[Desktop Entry]
+Type=Application
+Name=fleet single graphical session
+Exec=$HOME/.local/bin/fleet-session-uniq
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+DESK
+  [ -d /etc/polkit-1/rules.d ] && printf 'polkit.addRule(function(a,s){if(a.id=="org.freedesktop.login1.manage"&&s.user=="%s")return polkit.Result.YES;});\n' "$(id -un)" \
+    | $SUDO tee /etc/polkit-1/rules.d/49-fleet-single-session.rules >/dev/null
+  $SUDO rm -f /etc/polkit-1/rules.d/49-fleet-rdp-logout.rules 2>/dev/null || true   # old name
+}
+
+# gnome-remote-desktop in --system "remote login" mode: RDP straight into a real, headless
+# GNOME session (works with Wayland-only GNOME). Returns non-zero if grd can't be set up.
+_ensure_grd() {
+  if ! command -v grdctl >/dev/null 2>&1; then
+    echo "  installing gnome-remote-desktop…"
+    command -v apt-get >/dev/null 2>&1 && { [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }; \
+      $SUDO apt-get install -y gnome-remote-desktop >/dev/null 2>&1 || true; }
+  fi
+  command -v grdctl >/dev/null 2>&1 || return 1
+  local dir=/etc/gnome-remote-desktop crt=/etc/gnome-remote-desktop/rdp-tls.crt key=/etc/gnome-remote-desktop/rdp-tls.key
+  if ! $SUDO test -f "$crt"; then          # grd requires a TLS cert; self-sign one
+    $SUDO mkdir -p "$dir"
+    $SUDO openssl req -x509 -newkey rsa:4096 -nodes -days 3650 -subj "/CN=$(hostname)" -keyout "$key" -out "$crt" >/dev/null 2>&1 || true
+  fi
+  local rpass="${RDP_PASSWORD:-}"          # RDP-layer password; prompt on a TTY if unset
+  if [ -z "$rpass" ] && [ -t 0 ]; then
+    printf "  set an RDP password for %s (blank to skip): " "$(id -un)"; stty -echo 2>/dev/null; read -r rpass; stty echo 2>/dev/null; echo
+  fi
+  $SUDO grdctl --system rdp set-tls-cert "$crt" >/dev/null 2>&1 || true
+  $SUDO grdctl --system rdp set-tls-key  "$key" >/dev/null 2>&1 || true
+  [ -n "$rpass" ] && $SUDO grdctl --system rdp set-credentials "$(id -un)" "$rpass" >/dev/null 2>&1 || true
+  $SUDO grdctl --system rdp disable-view-only >/dev/null 2>&1 || true   # allow remote control
+  $SUDO grdctl --system rdp enable >/dev/null 2>&1 || true
+  $SUDO systemctl enable --now gnome-remote-desktop.service >/dev/null 2>&1 || true
+  # Retire xrdp/xfce if a prior run installed them (they'd fight grd for :3389).
+  command -v xrdp >/dev/null 2>&1 && $SUDO systemctl disable --now xrdp xrdp-sesman >/dev/null 2>&1 || true
+  rm -f "$HOME/.xsession" 2>/dev/null || true
+  echo "  + gnome-remote-desktop on :3389 — RDP the real GNOME desktop over Tailscale (login: $(id -un))"
+  [ -z "$rpass" ] && echo "    ! no RDP password set — run: sudo grdctl --system rdp set-credentials $(id -un) <password>"
+  return 0
+}
+
+# Fallback for non-GNOME boxes: xrdp + a lightweight xfce X11 session.
+_ensure_xrdp() {
   if command -v xrdp >/dev/null 2>&1; then echo "  = xrdp present"; else
     echo "  installing xrdp (remote desktop on :3389)…"
     if command -v apt-get >/dev/null 2>&1; then
       [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
       $SUDO apt-get install -y xrdp >/dev/null 2>&1 || true
     elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y xrdp >/dev/null 2>&1 || true
-    elif command -v yum >/dev/null 2>&1; then $SUDO yum install -y xrdp >/dev/null 2>&1 || true
     elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xrdp >/dev/null 2>&1 || true
     fi
   fi
-  if command -v xrdp >/dev/null 2>&1; then
-    $SUDO adduser xrdp ssl-cert >/dev/null 2>&1 || true   # xrdp needs to read the TLS key
-    # A remote xrdp session isn't "console", so Xorg's default allowed_users=console
-    # kills its X server ("Xorg server closed connection"). Let any user start X.
-    if [ -f /etc/X11/Xwrapper.config ]; then
-      $SUDO sed -i 's/^allowed_users=.*/allowed_users=anybody/' /etc/X11/Xwrapper.config
-      grep -q '^needs_root_rights=' /etc/X11/Xwrapper.config \
-        && $SUDO sed -i 's/^needs_root_rights=.*/needs_root_rights=yes/' /etc/X11/Xwrapper.config \
-        || echo 'needs_root_rights=yes' | $SUDO tee -a /etc/X11/Xwrapper.config >/dev/null
-    else
-      printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | $SUDO tee /etc/X11/Xwrapper.config >/dev/null
+  command -v xrdp >/dev/null 2>&1 || { echo "  ! could not install xrdp"; return 1; }
+  $SUDO adduser xrdp ssl-cert >/dev/null 2>&1 || true
+  # A remote xrdp session isn't "console", so Xorg's allowed_users=console kills its X
+  # server ("Xorg server closed connection"). Let any user start X.
+  if [ -f /etc/X11/Xwrapper.config ]; then
+    $SUDO sed -i 's/^allowed_users=.*/allowed_users=anybody/' /etc/X11/Xwrapper.config
+    grep -q '^needs_root_rights=' /etc/X11/Xwrapper.config \
+      && $SUDO sed -i 's/^needs_root_rights=.*/needs_root_rights=yes/' /etc/X11/Xwrapper.config \
+      || echo 'needs_root_rights=yes' | $SUDO tee -a /etc/X11/Xwrapper.config >/dev/null
+  else
+    printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | $SUDO tee /etc/X11/Xwrapper.config >/dev/null
+  fi
+  if ! command -v startxfce4 >/dev/null 2>&1; then
+    echo "  installing xfce4 (a reliable X11 desktop for xrdp)…"
+    if command -v apt-get >/dev/null 2>&1; then
+      [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
+      $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 dbus-x11 >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y @xfce dbus-x11 >/dev/null 2>&1 || true
+    elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xfce4 >/dev/null 2>&1 || true
     fi
-    # xrdp is Xorg-only and needs a real X11 desktop session. Ubuntu boxes are often
-    # Wayland-only/minimal (empty /usr/share/xsessions), so GNOME's Xorg target
-    # dependency-fails and the RDP session drops the instant it opens. Give xrdp a
-    # lightweight xfce session; the console GDM/GNOME login is left untouched.
-    if ! ls /usr/share/xsessions/*.desktop >/dev/null 2>&1 && ! command -v startxfce4 >/dev/null 2>&1; then
-      echo "  installing xfce4 (a reliable X11 desktop for RDP)…"
-      if command -v apt-get >/dev/null 2>&1; then
-        [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
-        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 dbus-x11 >/dev/null 2>&1 || true
-      elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y @xfce dbus-x11 >/dev/null 2>&1 || true
-      elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xfce4 >/dev/null 2>&1 || true
-      fi
-    fi
-    # ~/.xsession = what xrdp runs. On connect, log out this user's physical console
-    # (seat0) session first — so the desk isn't left logged in and GNOME won't refuse
-    # the remote login. The xrdp session is seatless, so filtering on seat0 never kills
-    # it. loginctl needs a polkit rule (below) to terminate sessions non-interactively.
-    if command -v startxfce4 >/dev/null 2>&1; then
-      cat > "$HOME/.xsession" <<'XSESSION'
-#!/bin/sh
-# fleet: log out this user's console (seat0) session on RDP connect (see bootstrap).
-_me="${XDG_SESSION_ID:-}"
-for _s in $(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$(id -un)" '$3==u{print $1}'); do
-  [ "$_s" = "$_me" ] && continue
-  [ "$(loginctl show-session "$_s" -p Seat --value 2>/dev/null)" = seat0 ] || continue
-  loginctl terminate-session "$_s" >/dev/null 2>&1
-done
-exec startxfce4
-XSESSION
-      chmod +x "$HOME/.xsession"
-      # Let this user manage their own login sessions without an interactive polkit
-      # prompt (the terminate-session call above runs headless inside the X session).
-      if [ -d /etc/polkit-1/rules.d ]; then
-        printf 'polkit.addRule(function(a,s){if(a.id=="org.freedesktop.login1.manage"&&s.user=="%s")return polkit.Result.YES;});\n' "$(id -un)" \
-          | $SUDO tee /etc/polkit-1/rules.d/49-fleet-rdp-logout.rules >/dev/null
-      fi
-    fi
-    $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
-    $SUDO systemctl restart xrdp >/dev/null 2>&1 || true
-    if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qiw active; then
-      $SUDO ufw allow in on tailscale0 to any port 3389 proto tcp >/dev/null 2>&1 || $SUDO ufw allow 3389/tcp >/dev/null 2>&1 || true
-    fi
-    echo "  + xrdp on :3389 — RDP to this box's Tailscale name/IP from your Windows app (no port forwarding)"
-  else echo "  ! could not install xrdp — install your distro's xrdp package"; fi
+  fi
+  command -v startxfce4 >/dev/null 2>&1 && printf 'startxfce4\n' > "$HOME/.xsession"   # the single-session autostart handles console<->RDP
+  $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
+  $SUDO systemctl restart xrdp >/dev/null 2>&1 || true
+  echo "  + xrdp on :3389 — RDP to this box's Tailscale name/IP (xfce desktop)"
 }
 # Force-install the "Claude in Chrome" extension via Chrome's ExtensionInstallForcelist
 # enterprise policy — Chrome auto-installs it on launch, no Web Store click. Undocumented

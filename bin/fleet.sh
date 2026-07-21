@@ -448,10 +448,14 @@ cmd_attach() {
   fi
   # Attach if outside tmux; switch-client if already inside one. exec bypasses the
   # tmux() wrapper (it runs the real binary), so pass the pinned socket explicitly.
-  if [[ -n "${TMUX:-}" ]]; then
+  # switch-client only works within the SAME tmux server. If you're inside a DIFFERENT
+  # tmux (e.g. an ssh-tmux on the default socket, not fleet's pinned one), switch-client
+  # fails with "no current client" — so attach instead, with TMUX unset so tmux lets you
+  # attach from within another session. ${TMUX%%,*} is the socket path in $TMUX.
+  if [[ -n "${TMUX:-}" && "${TMUX%%,*}" == "$TMUX_SOCK" ]]; then
     exec env TERM="$FLEET_TERM" tmux -S "$TMUX_SOCK" switch-client -t "$SESSION"
   else
-    exec env TERM="$FLEET_TERM" tmux -S "$TMUX_SOCK" attach -t "$SESSION"
+    exec env -u TMUX TERM="$FLEET_TERM" tmux -S "$TMUX_SOCK" attach -t "$SESSION"
   fi
 }
 

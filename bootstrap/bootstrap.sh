@@ -196,6 +196,10 @@ _ensure_grd() {
     $SUDO mkdir -p "$dir"
     $SUDO openssl req -x509 -newkey rsa:4096 -nodes -days 3650 -subj "/CN=$(hostname)" -keyout "$key" -out "$crt" >/dev/null 2>&1 || true
   fi
+  # grd's daemon runs unprivileged (User=gnome-remote-desktop); openssl made the key
+  # root:root 600, which it can't read → "TLS not configured properly". Hand both to it.
+  local grd_user; grd_user="$($SUDO systemctl show gnome-remote-desktop.service -p User --value 2>/dev/null)"
+  [ -n "$grd_user" ] && $SUDO chown "$grd_user" "$crt" "$key" 2>/dev/null || true
   local rpass="${RDP_PASSWORD:-}"          # RDP-layer password; prompt on a TTY if unset
   if [ -z "$rpass" ] && [ -t 0 ]; then
     printf "  set an RDP password for %s (blank to skip): " "$(id -un)"; stty -echo 2>/dev/null; read -r rpass; stty echo 2>/dev/null; echo

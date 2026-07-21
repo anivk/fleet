@@ -155,6 +155,20 @@ ensure_rdp() {
     else
       printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | $SUDO tee /etc/X11/Xwrapper.config >/dev/null
     fi
+    # xrdp is Xorg-only and needs a real X11 desktop session. Ubuntu boxes are often
+    # Wayland-only/minimal (empty /usr/share/xsessions), so GNOME's Xorg target
+    # dependency-fails and the RDP session drops the instant it opens. Give xrdp a
+    # lightweight xfce session; the console GDM/GNOME login is left untouched.
+    if ! ls /usr/share/xsessions/*.desktop >/dev/null 2>&1 && ! command -v startxfce4 >/dev/null 2>&1; then
+      echo "  installing xfce4 (a reliable X11 desktop for RDP)…"
+      if command -v apt-get >/dev/null 2>&1; then
+        [ -z "$_pm_updated" ] && { $SUDO apt-get update >/dev/null 2>&1 || true; _pm_updated=1; }
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 dbus-x11 >/dev/null 2>&1 || true
+      elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y @xfce dbus-x11 >/dev/null 2>&1 || true
+      elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --noconfirm xfce4 >/dev/null 2>&1 || true
+      fi
+    fi
+    command -v startxfce4 >/dev/null 2>&1 && printf 'startxfce4\n' > "$HOME/.xsession"
     $SUDO systemctl enable --now xrdp >/dev/null 2>&1 || true
     $SUDO systemctl restart xrdp >/dev/null 2>&1 || true
     if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qiw active; then

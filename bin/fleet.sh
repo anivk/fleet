@@ -372,11 +372,17 @@ cmd_status() {
     echo "fleet not running"
     return
   fi
-  printf '%-10s %-8s %s\n' WINDOW ALIVE PANE-CMD
-  tmux list-windows -t "$SESSION" -F '#W|#{pane_dead}|#{pane_current_command}' \
-    | while IFS='|' read -r w dead cmd; do
-        [[ "$dead" == "1" ]] && alive=DEAD || alive=up
-        printf '%-10s %-8s %s\n' "$w" "$alive" "$cmd"
+  # List every AGENT by its stable @agent tag (works the same gridded or spread — not the
+  # grid windows), with live/dead, its status (working/waiting/idle/dead from the Claude
+  # hooks, or scraped), and a one-line "doing" summary. `fleet log <agent>` / `fleet attach
+  # <agent>` show the full pane.
+  printf '%-26s %-6s %-9s %s\n' AGENT ALIVE STATUS DOING
+  tmux list-panes -s -t "$SESSION" -F '#{@agent}|#{pane_dead}|#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null \
+    | sort | while IFS='|' read -r agent dead tgt; do
+        [ -n "$agent" ] || continue
+        [ "$dead" = 1 ] && alive=DEAD || alive=up
+        st="$(read_state "$agent" 2>/dev/null)" || st="$(scrape_pane "$tgt" "$dead")"
+        printf '%-26s %-6s %-9s %s\n' "${agent#"$OWNER-$LOCATION-"}" "$alive" "${st%%|*}" "${st##*|}"
       done
 }
 

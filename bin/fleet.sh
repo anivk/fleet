@@ -238,7 +238,10 @@ start_agent() {
     mkdir -p "$dir"   # scratch agent: an empty working folder it owns
   fi
 
-  if window_exists "$win"; then
+  # "Already running?" must follow the agent, not its window name — after `fleet grid`
+  # the pane lives in a grid-* window, so a window-name check would miss it and spawn a
+  # DUPLICATE. Check the stable @agent pane tag (present in any window, gridded or not).
+  if [[ -n "$(pane_for "$win")" ]]; then
     echo "  = $win already running"
     return
   fi

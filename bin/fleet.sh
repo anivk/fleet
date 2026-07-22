@@ -344,6 +344,45 @@ cmd_install_hooks() {
   echo "fleet: hooks installed in $cfg"
 }
 
+# Ensure every agent pane can do SSH git (agents clone git@github.com:…). A box has no
+# login ssh-agent for a boot-started (linger) session, and even interactively the key is
+# usually only readable as a file, not loaded in an agent — so SSH commit signing, a
+# passphrased key, or anything agent-based fails. Run a small fleet-managed ssh-agent at a
+# STABLE socket, load the default keys into it non-interactively (a no-passphrase key —
+# what `fleet keys setup` makes — loads silently), and export SSH_AUTH_SOCK so the panes
+# we spawn next inherit a live agent. Best-effort; skip with FLEET_NO_SSH_AGENT=1.
+_ensure_ssh_keys() {
+  [[ "${FLEET_NO_SSH_AGENT:-0}" == 1 ]] && return 0
+  command -v ssh-add >/dev/null 2>&1 || return 0
+  # If a populated agent is already in the environment (macOS keychain / 1Password on a
+  # laptop — whose keys often have NO on-disk id_* file), KEEP it: just top it up with any
+  # default on-disk keys and let the panes inherit it. Only when no agent has keys (a
+  # headless box, especially a boot-started linger session) do we run our own at a stable
+  # socket. ssh-add -l rc: 0 = keys loaded, 1 = agent reachable but empty, 2 = no agent.
+  local rc=0; ssh-add -l >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    command -v ssh-agent >/dev/null 2>&1 && ls ~/.ssh/id_* >/dev/null 2>&1 || return 0  # nothing to run/load
+    local sock="${XDG_CONFIG_HOME:-$HOME/.config}/fleet/ssh-agent.sock" r2=0
+    SSH_AUTH_SOCK="$sock" ssh-add -l >/dev/null 2>&1 || r2=$?
+    if [[ "$r2" -eq 2 ]]; then                              # our agent isn't up — start it
+      rm -f "$sock"; mkdir -p -m 700 "$(dirname "$sock")"
+      eval "$(ssh-agent -a "$sock" 2>/dev/null)" >/dev/null 2>&1 || return 0
+    fi
+    export SSH_AUTH_SOCK="$sock"
+  fi
+  # Add any default on-disk keys not already in whatever agent we're now pointed at.
+  local k fp loaded n=0; loaded="$(ssh-add -l 2>/dev/null || true)"
+  for k in ~/.ssh/id_ed25519 ~/.ssh/id_ecdsa ~/.ssh/id_rsa; do
+    [[ -f "$k" ]] || continue
+    fp="$(ssh-keygen -lf "$k" 2>/dev/null | awk '{print $2}')"
+    if [[ -n "$fp" ]] && printf '%s' "$loaded" | grep -qF "$fp"; then n=$((n + 1)); continue; fi
+    # non-interactive: a no-passphrase key loads; SSH_ASKPASS=/bin/false + </dev/null makes
+    # a passphrased one fail fast instead of hanging a headless boot.
+    DISPLAY= SSH_ASKPASS=/bin/false ssh-add "$k" </dev/null >/dev/null 2>&1 && n=$((n + 1)) || true
+  done
+  [[ "$n" -gt 0 ]] && echo "  ssh-agent: $n key(s) available for git" || true
+}
+
 cmd_start() {
   [[ "$MODE" == client ]] && die "client mode: this machine doesn't run local agents — attach a server with 'fleet remote <host>'. Force once with: FLEET_MODE=server fleet start"
   command -v tmux >/dev/null || die "tmux not installed (sudo apt install -y tmux)"
@@ -354,10 +393,14 @@ cmd_start() {
   local a; for a in "$@"; do [[ "$a" == --fresh ]] && FLEET_RESUME=0; done
   FLEET_RESUME="${FLEET_RESUME:-1}"
 
-  ensure_logins   # prompt for claude/codex login if the roster needs it and it's missing
+  ensure_logins     # prompt for claude/codex login if the roster needs it and it's missing
+  _ensure_ssh_keys  # load git SSH keys into a stable agent so every pane can push/pull
 
   echo "starting fleet in tmux session '$SESSION' ($([[ "$FLEET_RESUME" == 1 ]] && echo resuming || echo fresh))"
   for a in "${AGENTS[@]}"; do start_agent "$a"; done
+  # Publish the agent socket into the session env too, so panes from a later `fleet start`
+  # / `fleet grid` / respawn (and any already-running session) inherit a live agent.
+  [[ -n "${SSH_AUTH_SOCK:-}" ]] && tmux set-environment -g SSH_AUTH_SOCK "$SSH_AUTH_SOCK" 2>/dev/null || true
   echo
   cmd_status
   echo
@@ -1335,32 +1378,48 @@ UNIT
   esac
 }
 
-# fleet caffeinate [--prevent-screen-lock] | fleet decaffeinate — keep the machine
-# awake (so long-running agents aren't interrupted by sleep) across macOS + Linux.
-# macOS: `caffeinate`. Linux: a `systemd-inhibit` block. A backgrounded process holds
+# fleet caffeinate [-s|--screen] | fleet decaffeinate — keep the machine awake (so
+# long-running agents aren't interrupted by sleep) across macOS + Linux. Auto-expires
+# after 24h (FLEET_CAFFEINATE_SECS overrides; 0 = never). -s/--screen also holds the
+# DISPLAY on (no monitor blank), not just system sleep. macOS: `caffeinate`. Linux:
+# GNOME idle inhibit for --screen, else `systemd-inhibit`. A backgrounded process holds
 # the assertion; the pidfile tracks it so `decaffeinate` (or `caffeinate status`) works.
 _caffeine_pid() { printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/fleet/caffeinate.pid"; }
 cmd_caffeinate() {
-  local lock=0 a; for a in "$@"; do case "$a" in --prevent-screen-lock) lock=1 ;; status) cmd_caffeinate_status; return ;; esac; done
+  local lock=0 a; for a in "$@"; do case "$a" in -s|--screen|--prevent-screen-lock) lock=1 ;; status) cmd_caffeinate_status; return ;; esac; done
   local pid; pid="$(_caffeine_pid)"; mkdir -p "$(dirname "$pid")"
   if [[ -f "$pid" ]] && kill -0 "$(cat "$pid")" 2>/dev/null; then
     echo "already caffeinated (pid $(cat "$pid"))"; return
   fi
+  # Auto-expire after 24h so a forgotten `caffeinate` can't pin the machine awake
+  # indefinitely — override with FLEET_CAFFEINATE_SECS (0 = never expire).
+  local secs="${FLEET_CAFFEINATE_SECS:-86400}" ttl
+  ttl="$([[ "$secs" == 0 ]] && echo "until decaffeinate" || echo "expires in $((secs / 3600))h")"
   case "$(uname -s)" in
     Darwin)
       command -v caffeinate >/dev/null || die "caffeinate not found"
       # -i idle, -m disk, -s system(on AC); +lock: -d display + -u user-active.
+      # -t <secs> makes the assertion self-release after the timeout (omit for 0=forever).
       local flags="-i -m -s"; [[ "$lock" == 1 ]] && flags="-d -u $flags"
+      [[ "$secs" != 0 ]] && flags="$flags -t $secs"
       nohup caffeinate $flags >/dev/null 2>&1 & ;;
     Linux)
-      command -v systemd-inhibit >/dev/null || die "systemd-inhibit not found (systemd-logind) — can't inhibit sleep"
-      # sleep = suspend/hibernate; +lock: idle too, which holds off the screensaver/lock.
-      local what="sleep"; [[ "$lock" == 1 ]] && what="sleep:idle"
-      nohup systemd-inhibit --what="$what" --who=fleet --why="fleet caffeinate" --mode=block sleep infinity >/dev/null 2>&1 & ;;
+      local dur="infinity"; [[ "$secs" != 0 ]] && dur="$secs"
+      # --screen: prefer GNOME's own idle inhibit — on Wayland it reliably holds the
+      # DISPLAY (blank/DPMS) + idle-suspend, which the logind idle inhibitor often can't.
+      if [[ "$lock" == 1 ]] && command -v gnome-session-inhibit >/dev/null 2>&1; then
+        nohup gnome-session-inhibit --inhibit idle:suspend --reason "fleet caffeinate" sleep "$dur" >/dev/null 2>&1 &
+      else
+        command -v systemd-inhibit >/dev/null || die "systemd-inhibit not found (systemd-logind) — can't inhibit sleep"
+        # sleep = suspend/hibernate; --screen adds idle (screensaver/blank). The held
+        # `sleep` sets the lock's lifetime: a finite duration self-releases it.
+        local what="sleep"; [[ "$lock" == 1 ]] && what="sleep:idle"
+        nohup systemd-inhibit --what="$what" --who=fleet --why="fleet caffeinate" --mode=block sleep "$dur" >/dev/null 2>&1 &
+      fi ;;
     *) die "caffeinate: unsupported OS ($(uname -s))" ;;
   esac
   echo $! > "$pid"
-  echo "caffeinated (pid $!) — sleep prevented$([[ "$lock" == 1 ]] && echo ' + screen lock')"
+  echo "caffeinated (pid $!) — sleep prevented$([[ "$lock" == 1 ]] && echo ' + screen lock') ($ttl)"
   echo "  stop with: fleet decaffeinate"
 }
 cmd_decaffeinate() {

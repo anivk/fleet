@@ -32,7 +32,7 @@ if [ -n "${BASH_VERSION:-}" ]; then
     elif [ "${COMP_WORDS[1]}" = boot ] && [ "$COMP_CWORD" -eq 2 ]; then
       COMPREPLY=($(compgen -W "enable disable status" -- "$cur"))
     elif [ "${COMP_WORDS[1]}" = caffeinate ] && [ "$COMP_CWORD" -eq 2 ]; then
-      COMPREPLY=($(compgen -W "--prevent-screen-lock status" -- "$cur"))
+      COMPREPLY=($(compgen -W "-s --screen --prevent-screen-lock status" -- "$cur"))
     elif [ "${COMP_WORDS[1]}" = tray ] && [ "$COMP_CWORD" -eq 2 ]; then
       COMPREPLY=($(compgen -W "start stop status enable-autostart disable-autostart" -- "$cur"))
     elif [ "${COMP_WORDS[1]}" = hosts ] && [ "$COMP_CWORD" -eq 2 ]; then
